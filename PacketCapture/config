@@ -1,0 +1,10 @@
+{
+  "capture_interval": 300,
+  "scan_interval": 3600
+  "interface": "enp1s0",
+  "capture_file": "example_capture.pcap",
+  "protocol": "UDP",
+  "ports": [ 47808, 47809 ],
+  "api_key": "",
+  "api_url": ""
+}
