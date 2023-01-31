@@ -40,8 +40,8 @@ def packet_capture(config_path, **kwargs):
     except Exception:
         config = {}
 
-    capture_interval = config.get("capture_interval", 300)
-    scan_interval = config.get("scan_interval", 60 * 60)
+    capture_duration = config.get("capture_duration", 300)
+    capture_interval = config.get("capture_interval", 60 * 60)
     interface = config.get("interface")
     capture_file = config.get("capture_file", "/var/lib/volttron/default_capture.pcap")
     protocol = config.get("protocol", "UDP")
@@ -51,8 +51,8 @@ def packet_capture(config_path, **kwargs):
     api_url = config.get("api_url", "https://app.visualbacnet.com/api/v2/upload")
 
     return PacketCapture(
+        capture_duration,
         capture_interval,
-        scan_interval,
         interface,
         capture_file,
         protocol,
@@ -70,8 +70,8 @@ class PacketCapture(Agent):
 
     def __init__(
         self,
+        capture_duration,
         capture_interval,
-        scan_interval,
         interface,
         capture_file,
         protocol,
@@ -81,8 +81,8 @@ class PacketCapture(Agent):
         **kwargs,
     ):
         super(PacketCapture, self).__init__(**kwargs)
+        self.capture_duration = capture_duration
         self.capture_interval = capture_interval
-        self.scan_interval = scan_interval
         self.interface = interface
         self.capture_file = capture_file
         self.protocol = protocol
@@ -134,16 +134,23 @@ class PacketCapture(Agent):
         if isinstance(self.ports, int):
             ports_list = self.ports
         elif isinstance(self.ports, list):
-            ports_list = str(self.ports[0])
-            if not ports_list:
+            # use type() instead of isinstance(), since booleans inherit from int
+            # prevents false negatives if list contains bool
+            if not all((type(p) is int) for p in self.ports):
+                _log.error("ports list contains non-integer")
+                return
+
+            if len(self.ports) < 1:
                 _log.error("no ports defined to scan on")
                 return None
+            ports_list = str(self.ports[0])
             for port in self.ports[1:]:
                 ports_list += f" or port {port}"
         else:
             _log.error(f"port is not int or list: {type(self.ports)} {self.ports=}")
+            return
 
-        command = f"""tcpdump -G {self.capture_interval} -W 1 -w {self.capture_file} proto {self.protocol} and port {ports_list}"""
+        command = f"""tcpdump -G {self.capture_duration} -W 1 -w {self.capture_file} proto {self.protocol} and port {ports_list}"""
         if self.interface:
             command += f" -i {self.interface}"
 
@@ -179,7 +186,7 @@ class PacketCapture(Agent):
         Usually not needed if using the configuration store.
         """
 
-        self.core.periodic(self.scan_interval, self.packet_capture, wait=15)
+        self.core.periodic(self.capture_interval, self.packet_capture, wait=15)
 
     @Core.receiver("onstop")
     def onstop(self, sender, **kwargs):
