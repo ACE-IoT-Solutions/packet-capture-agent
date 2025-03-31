@@ -197,9 +197,9 @@ class PacketCapture(Agent):
                     request = grequests.post(
                         self.api_url,
                         files=(
-                            ("apiKey", (None, self.api_key)),
                             ("file", (f"{os.uname()[1]}:{file_name}", filedata)),
                         ),
+                        headers={"Authorization": f"Bearer {self.api_key}"},
                     )
                     (response,) = grequests.map((request,))
                     if response.status_code == 201:
