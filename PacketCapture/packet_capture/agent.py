@@ -46,6 +46,7 @@ def packet_capture(config_path, **kwargs):
 
     capture_duration = config.get("capture_duration", 300)
     capture_interval = config.get("capture_interval", 60 * 60)
+    upload_interval = config.get("upload_interval", 60)  # Default to 1 minute
     interface = config.get("interface")
     capture_path = config.get("capture_path", "/var/lib/volttron/packet_captures")
     protocol = config.get("protocol", "UDP")
@@ -58,6 +59,7 @@ def packet_capture(config_path, **kwargs):
     return PacketCapture(
         capture_duration,
         capture_interval,
+        upload_interval,
         interface,
         capture_path,
         protocol,
@@ -78,6 +80,7 @@ class PacketCapture(Agent):
         self,
         capture_duration,
         capture_interval,
+        upload_interval,
         interface,
         capture_path,
         protocol,
@@ -90,6 +93,7 @@ class PacketCapture(Agent):
         super(PacketCapture, self).__init__(**kwargs)
         self.capture_duration = capture_duration
         self.capture_interval = capture_interval
+        self.upload_interval = upload_interval
         self.interface = interface
         self.capture_path = capture_path
         self.protocol = protocol
@@ -137,6 +141,16 @@ class PacketCapture(Agent):
             _log.info(f"Created capture directory: {capture_path}")
         else:
             _log.info(f"Using existing capture directory: {capture_path}")
+    
+    def check_free_space(self) -> bool:
+        """
+        Check if there is enough free space in the capture directory.
+        Returns True if there is enough space, False otherwise.
+        """
+        """Check if there is enough free space in the capture directory."""
+        statvfs = os.statvfs(self.get_agent_data_path())
+        free_space = statvfs.f_frsize * statvfs.f_bavail
+        return free_space > 2^30 # Check if there is at least 1 GB of free space
 
     def get_capture_path(self, start_time: datetime):
         """
@@ -145,11 +159,11 @@ class PacketCapture(Agent):
         """
         # Assuming the default path for Volttron's data directory
         # You can customize this if your agent has a different data path.
-        start_time_str = start_time.replace(second=0, microsecond=0).strftime("%Y-%m-%d_%H-%M-%S")
+        start_time_str = start_time.replace(second=0, microsecond=0).strftime("%Y-%m-%dT%H-%M-%S")
         end_time_str = (
             (start_time + timedelta(seconds=self.capture_duration))
             .replace(second=0, microsecond=0)
-            .strftime("%Y-%m-%d_%H-%M-%S")
+            .strftime("%Y-%m-%dT%H-%M-%S")
         )
 
         return os.path.join(
@@ -228,6 +242,9 @@ class PacketCapture(Agent):
         if self.capture_lock.locked():
             _log.info("Previous capture has not completed. Skipping packet capture")
             return
+        if not self.check_free_space():
+            _log.error("Not enough free space, skipping packet capture.")
+            return
         with self.capture_lock:
             _log.info("Starting packet capture...")
             capture_start_time = datetime.now(timezone.utc)
@@ -274,7 +291,7 @@ class PacketCapture(Agent):
         )
         self.initialize_data_path(self.get_agent_data_path())
         self.core.periodic(self.capture_interval, self.packet_capture, wait=15)
-        self.core.periodic(self.capture_interval, self.upload_to_api, wait=5)
+        self.core.periodic(self.upload_interval, self.upload_to_api, wait=5)
 
     @Core.receiver("onstop")
     def onstop(self, sender, **kwargs):
