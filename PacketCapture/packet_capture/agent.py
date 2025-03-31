@@ -26,7 +26,7 @@ from volttron.platform.vip.agent import RPC, Agent, Core
 
 _log = logging.getLogger(__name__)
 utils.setup_logging()
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 
 def packet_capture(config_path, **kwargs):
