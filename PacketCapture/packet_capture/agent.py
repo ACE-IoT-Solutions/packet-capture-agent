@@ -9,20 +9,23 @@ Enable upload of packet captures to a given API
 
 __docformat__ = "reStructuredText"
 
+import glob
+import gzip
 import logging
-import sys
-import subprocess
 import os
+import subprocess
+import sys
+from datetime import datetime, timezone, timedelta
 
 import gevent
 import grequests
 from volttron.platform.agent import utils
 from volttron.platform.messaging.health import STATUS_BAD, STATUS_GOOD
-from volttron.platform.vip.agent import Agent, Core, RPC
+from volttron.platform.vip.agent import RPC, Agent, Core
 
 _log = logging.getLogger(__name__)
 utils.setup_logging()
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 def packet_capture(config_path, **kwargs):
@@ -90,7 +93,8 @@ class PacketCapture(Agent):
         self.api_key = api_key
         self.api_url = api_url
         self.config_store = {}
-        self.lock = gevent.lock.BoundedSemaphore()
+        self.capture_lock = gevent.lock.BoundedSemaphore()
+        self.upload_lock = gevent.lock.BoundedSemaphore()
 
     def configure(self, config_name, action, contents):
         """
@@ -100,74 +104,134 @@ class PacketCapture(Agent):
         Is called every time the configuration in the store changes.
         """
 
-    def upload_to_api(self):
+    def get_agent_data_path(self) -> str:
         """
-        Upload captured packets to visualbacnet API
+        Returns the path to the agent's data directory.
+        This is where the agent can store its state.
         """
-        self.lock.acquire()
-        _log.debug(f"uploading to API... {self.api_url}")
-        with open(self.capture_file, "rb") as file:
-            filedata = file.read()
-        try:
-            request = grequests.post(
-                self.api_url,
-                files=(
-                    ("apiKey", (None, self.api_key)),
-                    ("file", (f"{os.uname()[1]}:{self.capture_file}", filedata)),
-                ),
-            )
-            (response,) = grequests.map((request,))
-            _log.info(f"finished uploading: {response.status_code}")
-        except Exception as error:
-            _log.debug(f"{error=}")
-            self.lock.release()
-        self.lock.release()
+        # Assuming the default path for Volttron's data directory
+        # You can customize this if your agent has a different data path.
+        if self.data_path is not None:
+            return self.data_path
+        data_path = os.path.join(os.getcwd(), os.path.basename(os.getcwd()) + ".agent-data")
+        if os.path.exists(data_path):
+            return data_path
+        return os.getcwd()
 
-    def packet_capture(self):
+    def get_capture_path(self, start_time: datetime):
+        """
+        Returns the path to the capture file.
+        This is where the agent will store its packet captures.
+        """
+        # Assuming the default path for Volttron's data directory
+        # You can customize this if your agent has a different data path.
+        start_time_str = start_time.replace(second=0, microsecond=0).isoformat()
+        end_time_str = (
+            (start_time + timedelta(seconds=self.capture_duration))
+            .replace(second=0, microsecond=0)
+            .isoformat()
+        )
+
+        return os.path.join(
+            self.get_agent_data_path(),
+            f"{self.gateway_name}_{start_time_str}_{end_time_str}.pcap",
+        )
+
+    def compress_capture_file(self, capture_file: str):
+        """
+        Compress the capture file using gzip.
+        This will create a .gz file with the same name as the capture file.
+        :param capture_file: The path to the capture file.
+        """
+        with open(capture_file, "rb") as file:
+            with open(f"{capture_file}.gz", "wb") as compressed_file:
+                with gzip.GzipFile(fileobj=compressed_file, mode="wb") as gz:
+                    gz.write(file.read())
+        os.remove(capture_file)  # Remove the original file after compression
+
+    def upload_to_api(self) -> None:
+        """
+        Upload captured packets to ace API
+        """
+        with self.upload_lock:
+            _log.debug(f"uploading to API... {self.api_url}")
+            for file_path in glob.glob(f"{self.get_agent_data_path()}/*.pcap.gz"):
+                file_name = os.path.basename(file_path)
+                with open(file_path, "rb") as file:
+                    filedata = file.read()
+                try:
+                    request = grequests.post(
+                        self.api_url,
+                        files=(
+                            ("apiKey", (None, self.api_key)),
+                            ("file", (f"{os.uname()[1]}:{file_name}", filedata)),
+                        ),
+                    )
+                    (response,) = grequests.map((request,))
+                    _log.info(f"finished uploading: {response.status_code}")
+                    if response.status_code == 201:
+                        _log.info(f"Upload successful: {response.text}")
+                        os.remove(file_path)
+                except Exception as error:
+                    _log.debug(f"{error=}")
+
+    def generate_port_list(self, ports) -> str | None:
+        """
+        Generate a string representation of the ports for tcpdump command
+        :param ports: list of ports or a single port
+        :return: string representation of the ports
+        """
+        if isinstance(ports, int):
+            ports_list = str(ports)
+        elif isinstance(ports, list):
+            # use type() instead of isinstance(), since booleans inherit from int
+            # prevents false negatives if list contains bool
+            if not all((type(p) is int) for p in ports):
+                _log.error("ports list contains non-integer")
+                return None
+
+            if len(ports) < 1:
+                _log.error("no ports defined to scan on")
+                return None
+            ports_list = str(ports[0])
+            for port in ports[1:]:
+                ports_list += f" or port {port}"
+        else:
+            _log.error(f"port is not int or list: {type(ports)} {ports=}")
+            return None
+        return str(ports_list)
+
+    def packet_capture(self) -> None:
         """
         Capture network packets on configured ports
         """
-        if self.lock.locked():
-            _log.info("File upload not yet finished. Skipping packet capture")
+        if self.capture_lock.locked():
+            _log.info("Previous capture has not completed. Skipping packet capture")
             return
+        with self.capture_lock:
+            _log.info("Starting packet capture...")
+            capture_start_time = datetime.now(timezone.utc)
+            ports_str = self.generate_port_list(self.ports)
+            capture_file_path = self.get_capture_path(capture_start_time)
 
-        if isinstance(self.ports, int):
-            ports_list = self.ports
-        elif isinstance(self.ports, list):
-            # use type() instead of isinstance(), since booleans inherit from int
-            # prevents false negatives if list contains bool
-            if not all((type(p) is int) for p in self.ports):
-                _log.error("ports list contains non-integer")
+            command = f"""tcpdump -G {self.capture_duration} -W 1 -w {capture_file_path} proto {self.protocol} and port {ports_str}"""
+            if self.interface:
+                command += f" -i {self.interface}"
+
+            _log.info(f"capturing packets on ports {ports_str}")
+            try:
+                subprocess.run(
+                    command,
+                    shell=True,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            except subprocess.CalledProcessError as error:
+                _log.error(f"cannot execute tcpdump command: {error.stderr}")
                 return
-
-            if len(self.ports) < 1:
-                _log.error("no ports defined to scan on")
-                return None
-            ports_list = str(self.ports[0])
-            for port in self.ports[1:]:
-                ports_list += f" or port {port}"
-        else:
-            _log.error(f"port is not int or list: {type(self.ports)} {self.ports=}")
-            return
-
-        command = f"""tcpdump -G {self.capture_duration} -W 1 -w {self.capture_file} proto {self.protocol} and port {ports_list}"""
-        if self.interface:
-            command += f" -i {self.interface}"
-
-        _log.info(f"capturing packets on ports {ports_list}")
-        try:
-            subprocess.run(
-                command,
-                shell=True,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-        except subprocess.CalledProcessError as error:
-            _log.error(f"cannot execute tcpdump command: {error.stderr}")
-            return
-
-        self.upload_to_api()
+            self.compress_capture_file(capture_file_path)  # Compress the capture file
+            _log.info(f"Packet capture completed and {capture_file_path} compressed.")
 
     def _handle_publish(self, peer, sender, bus, topic, headers, message):
         """
@@ -185,8 +249,11 @@ class PacketCapture(Agent):
 
         Usually not needed if using the configuration store.
         """
-
+        _log.info(
+            f"Config loaded and starting capture loop every {self.capture_interval}, for {self.capture_duration}"
+        )
         self.core.periodic(self.capture_interval, self.packet_capture, wait=15)
+        self.core.periodic(self.capture_interval, self.upload_to_api, wait=5)
 
     @Core.receiver("onstop")
     def onstop(self, sender, **kwargs):
