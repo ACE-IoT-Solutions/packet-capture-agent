@@ -15,7 +15,8 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Union
 
 import gevent
 import grequests
@@ -46,22 +47,24 @@ def packet_capture(config_path, **kwargs):
     capture_duration = config.get("capture_duration", 300)
     capture_interval = config.get("capture_interval", 60 * 60)
     interface = config.get("interface")
-    capture_file = config.get("capture_file", "/var/lib/volttron/default_capture.pcap")
+    capture_path = config.get("capture_path", "/var/lib/volttron/packet_captures")
     protocol = config.get("protocol", "UDP")
     ports = config.get("ports", 47808)
     _log.debug(f"found {ports=} from config")
     api_key = config.get("api_key")
     api_url = config.get("api_url", "https://app.visualbacnet.com/api/v2/upload")
+    gateway_name = config.get("gateway_name", os.uname()[1])  # Default to the hostname
 
     return PacketCapture(
         capture_duration,
         capture_interval,
         interface,
-        capture_file,
+        capture_path,
         protocol,
         ports,
         api_key,
         api_url,
+        gateway_name,
         **kwargs,
     )
 
@@ -76,25 +79,28 @@ class PacketCapture(Agent):
         capture_duration,
         capture_interval,
         interface,
-        capture_file,
+        capture_path,
         protocol,
         ports,
         api_key,
         api_url,
+        gateway_name,
         **kwargs,
     ):
         super(PacketCapture, self).__init__(**kwargs)
         self.capture_duration = capture_duration
         self.capture_interval = capture_interval
         self.interface = interface
-        self.capture_file = capture_file
+        self.capture_path = capture_path
         self.protocol = protocol
         self.ports = ports
         self.api_key = api_key
         self.api_url = api_url
+        self.gateway_name = gateway_name
         self.config_store = {}
         self.capture_lock = gevent.lock.BoundedSemaphore()
         self.upload_lock = gevent.lock.BoundedSemaphore()
+        self.data_path = kwargs.get("data_path", None)
 
     def configure(self, config_name, action, contents):
         """
@@ -111,12 +117,26 @@ class PacketCapture(Agent):
         """
         # Assuming the default path for Volttron's data directory
         # You can customize this if your agent has a different data path.
-        if self.data_path is not None:
-            return self.data_path
-        data_path = os.path.join(os.getcwd(), os.path.basename(os.getcwd()) + ".agent-data")
+        if self.capture_path is not None:
+            return self.capture_path
+        data_path = os.path.join(
+            os.getcwd(), os.path.basename(os.getcwd()) + ".agent-data"
+        )
         if os.path.exists(data_path):
             return data_path
         return os.getcwd()
+    
+    def initialize_data_path(self, capture_path: str) -> None:
+        """
+        Initialize the data path for the agent.
+        Create the directory if it does not exist.
+        :param capture_path: The path to the capture directory.
+        """
+        if not os.path.exists(capture_path):
+            os.makedirs(capture_path)
+            _log.info(f"Created capture directory: {capture_path}")
+        else:
+            _log.info(f"Using existing capture directory: {capture_path}")
 
     def get_capture_path(self, start_time: datetime):
         """
@@ -125,11 +145,11 @@ class PacketCapture(Agent):
         """
         # Assuming the default path for Volttron's data directory
         # You can customize this if your agent has a different data path.
-        start_time_str = start_time.replace(second=0, microsecond=0).isoformat()
+        start_time_str = start_time.replace(second=0, microsecond=0).strftime("%Y-%m-%d_%H-%M-%S")
         end_time_str = (
             (start_time + timedelta(seconds=self.capture_duration))
             .replace(second=0, microsecond=0)
-            .isoformat()
+            .strftime("%Y-%m-%d_%H-%M-%S")
         )
 
         return os.path.join(
@@ -175,7 +195,7 @@ class PacketCapture(Agent):
                 except Exception as error:
                     _log.debug(f"{error=}")
 
-    def generate_port_list(self, ports) -> str | None:
+    def generate_port_list(self, ports) -> Union[str, None]:
         """
         Generate a string representation of the ports for tcpdump command
         :param ports: list of ports or a single port
@@ -252,6 +272,7 @@ class PacketCapture(Agent):
         _log.info(
             f"Config loaded and starting capture loop every {self.capture_interval}, for {self.capture_duration}"
         )
+        self.initialize_data_path(self.get_agent_data_path())
         self.core.periodic(self.capture_interval, self.packet_capture, wait=15)
         self.core.periodic(self.capture_interval, self.upload_to_api, wait=5)
 
