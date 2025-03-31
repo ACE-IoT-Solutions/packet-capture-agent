@@ -202,10 +202,13 @@ class PacketCapture(Agent):
                         ),
                     )
                     (response,) = grequests.map((request,))
-                    _log.info(f"finished uploading: {response.status_code}")
                     if response.status_code == 201:
                         _log.info(f"Upload successful: {response.text}")
                         os.remove(file_path)
+                    else:
+                        _log.error(
+                            f"Upload failed: {response.status_code} {response.text}"
+                        )
                 except Exception as error:
                     _log.debug(f"{error=}")
 
