@@ -174,9 +174,9 @@ class PacketCapture(Agent):
         Upload captured packets to ace API
         """
         with self.upload_lock:
-            _log.debug(f"uploading to API... {self.api_url}")
             for file_path in glob.glob(f"{self.get_agent_data_path()}/*.pcap.gz"):
                 file_name = os.path.basename(file_path)
+                _log.debug(f"uploading to API... {self.api_url} {file_name=}")
                 with open(file_path, "rb") as file:
                     filedata = file.read()
                 try:
