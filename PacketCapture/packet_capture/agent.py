@@ -26,7 +26,7 @@ from volttron.platform.vip.agent import RPC, Agent, Core
 
 _log = logging.getLogger(__name__)
 utils.setup_logging()
-__version__ = "1.1.1"
+__version__ = "1.2.1"
 
 
 def packet_capture(config_path, **kwargs):
@@ -39,36 +39,14 @@ def packet_capture(config_path, **kwargs):
     :returns: PacketCapture
     :rtype: PacketCapture
     """
+    # We'll use config file only if explicitly provided, otherwise defaults
+    # will be used and config store will provide actual configuration
     try:
         config = utils.load_config(config_path)
     except Exception:
         config = {}
 
-    capture_duration = config.get("capture_duration", 300)
-    capture_interval = config.get("capture_interval", 60 * 60)
-    upload_interval = config.get("upload_interval", 60)  # Default to 1 minute
-    interface = config.get("interface")
-    capture_path = config.get("capture_path", "/var/lib/volttron/packet_captures")
-    protocol = config.get("protocol", "UDP")
-    ports = config.get("ports", 47808)
-    _log.debug(f"found {ports=} from config")
-    api_key = config.get("api_key")
-    api_url = config.get("api_url", "https://app.visualbacnet.com/api/v2/upload")
-    gateway_name = config.get("gateway_name", os.uname()[1])  # Default to the hostname
-
-    return PacketCapture(
-        capture_duration,
-        capture_interval,
-        upload_interval,
-        interface,
-        capture_path,
-        protocol,
-        ports,
-        api_key,
-        api_url,
-        gateway_name,
-        **kwargs,
-    )
+    return PacketCapture(config, **kwargs)
 
 
 class PacketCapture(Agent):
@@ -76,35 +54,40 @@ class PacketCapture(Agent):
     Document agent constructor here.
     """
 
-    def __init__(
-        self,
-        capture_duration,
-        capture_interval,
-        upload_interval,
-        interface,
-        capture_path,
-        protocol,
-        ports,
-        api_key,
-        api_url,
-        gateway_name,
-        **kwargs,
-    ):
+    def __init__(self, config, **kwargs):
         super(PacketCapture, self).__init__(**kwargs)
-        self.capture_duration = capture_duration
-        self.capture_interval = capture_interval
-        self.upload_interval = upload_interval
-        self.interface = interface
-        self.capture_path = capture_path
-        self.protocol = protocol
-        self.ports = ports
-        self.api_key = api_key
-        self.api_url = api_url
-        self.gateway_name = gateway_name
-        self.config_store = {}
+        self.default_config = {
+            "capture_duration": 300,
+            "capture_interval": 60 * 60,
+            "upload_interval": 60,
+            "interface": None,
+            "capture_path": "/var/lib/volttron/packet_captures",
+            "protocol": "UDP",
+            "ports": 47808,
+            "api_key": None,
+            "api_url": "https://app.visualbacnet.com/api/v2/upload",
+            "gateway_name": os.uname()[1]  # Default to the hostname
+        }
+        
+        # Initialize with default values if no config provided, will be updated by configure method
+        self.capture_duration = config.get("capture_duration", self.default_config["capture_duration"])
+        self.capture_interval = config.get("capture_interval", self.default_config["capture_interval"])
+        self.upload_interval = config.get("upload_interval", self.default_config["upload_interval"])
+        self.interface = config.get("interface", self.default_config["interface"])
+        self.capture_path = config.get("capture_path", self.default_config["capture_path"])
+        self.protocol = config.get("protocol", self.default_config["protocol"])
+        self.ports = config.get("ports", self.default_config["ports"])
+        self.api_key = config.get("api_key", self.default_config["api_key"])
+        self.api_url = config.get("api_url", self.default_config["api_url"])
+        self.gateway_name = config.get("gateway_name", self.default_config["gateway_name"])
+        
         self.capture_lock = gevent.lock.BoundedSemaphore()
         self.upload_lock = gevent.lock.BoundedSemaphore()
         self.data_path = kwargs.get("data_path", None)
+        
+        # Store task references for reconfiguration
+        self.capture_task = None
+        self.upload_task = None
 
     def configure(self, config_name, action, contents):
         """
@@ -113,6 +96,37 @@ class PacketCapture(Agent):
 
         Is called every time the configuration in the store changes.
         """
+        _log.info(f"Configuring agent with {config_name}")
+        
+        if action == "NEW" or action == "UPDATE":
+            config = contents
+            
+            # Update agent parameters with new config
+            self.capture_duration = config.get("capture_duration", self.default_config["capture_duration"])
+            self.capture_interval = config.get("capture_interval", self.default_config["capture_interval"])
+            self.upload_interval = config.get("upload_interval", self.default_config["upload_interval"])
+            self.interface = config.get("interface", self.default_config["interface"])
+            self.capture_path = config.get("capture_path", self.default_config["capture_path"])
+            self.protocol = config.get("protocol", self.default_config["protocol"])
+            self.ports = config.get("ports", self.default_config["ports"])
+            self.api_key = config.get("api_key", self.default_config["api_key"])
+            self.api_url = config.get("api_url", self.default_config["api_url"])
+            self.gateway_name = config.get("gateway_name", self.default_config["gateway_name"])
+            
+            _log.info(f"Updated configuration: capture_interval={self.capture_interval}, "
+                     f"capture_duration={self.capture_duration}, protocol={self.protocol}, "
+                     f"ports={self.ports}")
+            if not self.api_key or not self.api_url or not self.interface:
+                _log.error("API key, API URL or interface not set. Skipping configuration update.")
+                self.core.health_status(STATUS_BAD, "API key, API URL or interface not set.")
+                return
+            
+            # Initialize data path if needed
+            self.initialize_data_path(self.get_agent_data_path())
+            
+            # Restart periodic tasks with new configuration if agent is already started
+            if self.core.running:
+                self._restart_periodic_tasks()
 
     def get_agent_data_path(self) -> str:
         """
@@ -142,6 +156,22 @@ class PacketCapture(Agent):
         else:
             _log.info(f"Using existing capture directory: {capture_path}")
     
+    def _restart_periodic_tasks(self):
+        """
+        Cancel and restart periodic tasks with updated configuration values.
+        This is called when configuration changes or on agent startup.
+        """
+        # Cancel existing tasks if they exist
+        if self.capture_task:
+            self.capture_task.cancel()
+        if self.upload_task:
+            self.upload_task.cancel()
+            
+        # Start new tasks with updated configuration
+        self.capture_task = self.core.periodic(self.capture_interval, self.packet_capture, wait=15)
+        self.upload_task = self.core.periodic(self.upload_interval, self.upload_to_api, wait=5)
+        _log.info(f"Restarted periodic tasks with new configuration")
+
     def check_free_space(self) -> bool:
         """
         Check if there is enough free space in the capture directory.
@@ -150,7 +180,7 @@ class PacketCapture(Agent):
         """Check if there is enough free space in the capture directory."""
         statvfs = os.statvfs(self.get_agent_data_path())
         free_space = statvfs.f_frsize * statvfs.f_bavail
-        return free_space > 2^30 # Check if there is at least 1 GB of free space
+        return free_space > 2**30 # Check if there is at least 1 GB of free space
 
     def get_capture_path(self, start_time: datetime):
         """
@@ -290,11 +320,14 @@ class PacketCapture(Agent):
         Usually not needed if using the configuration store.
         """
         _log.info(
-            f"Config loaded and starting capture loop every {self.capture_interval}, for {self.capture_duration}"
+            f"Agent starting with capture loop every {self.capture_interval}, for {self.capture_duration}"
         )
+        
+        # Initialize data directory
         self.initialize_data_path(self.get_agent_data_path())
-        self.core.periodic(self.capture_interval, self.packet_capture, wait=15)
-        self.core.periodic(self.upload_interval, self.upload_to_api, wait=5)
+        
+        # Start periodic tasks
+        self._restart_periodic_tasks()
 
     @Core.receiver("onstop")
     def onstop(self, sender, **kwargs):

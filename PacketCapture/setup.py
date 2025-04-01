@@ -19,6 +19,7 @@ setup(
     author_email="cristian@aceiotsolutions.com",
     install_requires=['volttron'],
     packages=packages,
+    package_data={agent_package: ['config']},
     entry_points={
         'setuptools.installation': [
             'eggsecutable = ' + agent_module + ':main',
