@@ -197,7 +197,7 @@ class PacketCapture(Agent):
                     request = grequests.post(
                         self.api_url,
                         files=(
-                            ("file", (f"{os.uname()[1]}:{file_name}", filedata)),
+                            ("file", (f"{self.gateway_name}:{file_name}", filedata)),
                         ),
                         headers={"Authorization": f"Bearer {self.api_key}"},
                     )
