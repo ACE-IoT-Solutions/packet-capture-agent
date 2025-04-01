@@ -8,5 +8,12 @@
   "ports": [47808, 47809],
   "api_key": null,
   "api_url": "https://app.visualbacnet.com/api/v2/upload",
-  "gateway_name": null
+  "gateway_name": null,
+  "client_id": "client",
+  "site_id": "site",
+  "analytics_enabled": true,
+  "publish_to_volttron": true,
+  "analytics_topic_prefix": null,
+  "prometheus_enabled": false,
+  "prometheus_metrics_path": "/opt/packages/prometheus_exporter/scrape_files/network_metrics.prom"
 }
