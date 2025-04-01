@@ -303,12 +303,6 @@ class PacketCapture(Agent):
             self.compress_capture_file(capture_file_path)  # Compress the capture file
             _log.info(f"Packet capture completed and {capture_file_path} compressed.")
 
-    def _handle_publish(self, peer, sender, bus, topic, headers, message):
-        """
-        Callback triggered by the subscription setup using
-        the topic from the agent's config file
-        """
-
     @Core.receiver("onstart")
     def onstart(self, sender, **kwargs):
         """
