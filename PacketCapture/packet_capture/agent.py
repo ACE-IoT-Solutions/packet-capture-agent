@@ -210,7 +210,7 @@ class PacketCapture(Agent):
                 if config_topic_prefix:
                     self.analytics_topic_prefix = config_topic_prefix
                 else:
-                    self.analytics_topic_prefix = f"/{self.client_id}/{self.site_id}/sentinel-stats"
+                    self.analytics_topic_prefix = f"/{self.client_id}/{self.site_id}/net-stats"
                 self.prometheus_enabled = config.get(
                     "prometheus_enabled", self.default_config["prometheus_enabled"]
                 )
