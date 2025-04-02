@@ -108,7 +108,17 @@ This allows the metrics to be scraped by Prometheus and visualized in dashboards
 - `message_types/{type}`: Count for each type of BACnet message
 - `destination_types/{type}`: Count for each type of destination address
 
+## Packet Processing Library
+
+This agent originally used pyshark for packet processing, but has been refactored to use scapy. The change provides the following benefits:
+
+- **Simplified dependencies**: Removes the need for nest_asyncio and avoids issues with asyncio event loop nesting
+- **Better performance**: Scapy provides more efficient packet processing compared to pyshark
+- **Less overhead**: Removes dependency on external tools like tshark
+- **More direct access**: Works directly with packet data instead of going through parsing layers
+
 ## Version History
+1.6.0: Refactored to use scapy instead of pyshark for packet processing
 1.5.0: Added client and site identifiers for better metrics organization and topic generation
 1.4.1: Updated to use prometheus_client library for proper metrics formatting
 1.4.0: Added Prometheus metrics support and made VOLTTRON publishing optional

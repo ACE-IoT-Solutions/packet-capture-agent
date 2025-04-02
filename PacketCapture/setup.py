@@ -19,10 +19,9 @@ setup(
     author_email="cristian@aceiotsolutions.com",
     install_requires=[
         "volttron",
-        "pyshark",
+        "scapy",
         "bacpypes>=0.16.7,<0.20.0",
         "netifaces",
-        "nest_asyncio",
         "networkx",
         "pyvis",
         "prometheus_client",

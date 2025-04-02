@@ -8,42 +8,20 @@ directly into the agent to avoid external dependencies.
 
 from collections import defaultdict
 from typing import Any, Dict, Generator, List, Tuple, Union
+import logging
+import binascii
 
-import nest_asyncio
 import netifaces as ni
-import pyshark
-from bacpypes.analysis import decode_packet
+from scapy.all import PcapReader
+from .bp_analytics import decode_packet
 from bacpypes.apdu import IAmRequest, WhoIsRequest
 from bacpypes.debugging import xtob
 from bacpypes.pdu import PDU, Address, GlobalBroadcast, LocalBroadcast, RemoteStation
 
-# Apply nest_asyncio to allow nested asyncio event loops (needed for pyshark)
-nest_asyncio.apply()
+_log = logging.getLogger(__name__)
 
 
-def assemble_bp_packet(packet) -> str:
-    """Takes a packet from pyshark and assembles the string to be decoded by bacpypes.
-
-    Args:
-        packet: A pyshark packet object containing Ethernet, IP, and UDP layers
-
-    Returns:
-        str: A colon-separated hexadecimal string representation of the packet that can be
-             processed by the bacpypes library's decode_packet function
-    """
-    # Concatenate the raw hex values from Ethernet, IP, and UDP headers
-    packet_data = packet.eth_raw.value + packet.ip_raw.value + packet.udp_raw.value
-
-    # Format the data as colon-separated hex pairs and append the UDP payload
-    data = (
-        ":".join((packet_data[x : x + 2] for x in range(0, len(packet_data), 2)))
-        + ":"
-        + packet.udp.payload.raw_value
-    )
-    return data
-
-
-def iterate_bacnet_packets(pcap_path: str, broadcast_addrs: List[str]) -> Generator:
+def iterate_bacnet_packets(pcap_path: str) -> Generator:
     """Iterates through a pcap file and yields decoded BACnet packets.
 
     Args:
@@ -53,19 +31,18 @@ def iterate_bacnet_packets(pcap_path: str, broadcast_addrs: List[str]) -> Genera
     Yields:
         Decoded BACnet APDU objects with valid source and destination addresses
     """
-    # Open the pcap file for processing
-    with pyshark.FileCapture(pcap_path, include_raw=True, use_json=True) as captures:
-        for packet in captures:
+    # Read the pcap file
+    with PcapReader(pcap_path) as pcap_reader:
+        # Decode packets using bacpypes
+        for packet in pcap_reader:
             try:
-                # Assemble and decode the packet
-                data = assemble_bp_packet(packet)
-                bp_apdu = decode_packet(xtob(data))
-
+                bp_apdu = decode_packet(packet.original)
                 # Only yield packets with valid source and destination addresses
                 if bp_apdu.pduSource and bp_apdu.pduDestination:
                     yield bp_apdu
             except Exception as e:
                 # Skip packets that can't be processed
+                print(f"Error decoding packet: {e} data: {packet.original.hex()}")
                 continue
 
 
@@ -91,78 +68,78 @@ def process_pcap(pcap_path: str, broadcast_addrs: List[str]) -> Dict[str, Any]:
         - packet_count: Total number of valid packets processed
     """
     packet_count = 0
-    with pyshark.FileCapture(pcap_path, include_raw=True, use_json=True) as captures:
-        # Initialize counters and mappings
-        traffic_counter: Dict[Tuple[str, str], int] = defaultdict(
-            int
-        )  # Count traffic between source-destination pairs
-        traffic_type_counter: Dict[str, int] = defaultdict(
-            int
-        )  # Count messages by BACnet message type
-        dest_type_counter: Dict[str, int] = defaultdict(
-            int
-        )  # Count by destination type (broadcast, unicast, etc.)
-        broadcast_src: Dict[str, int] = defaultdict(
-            int
-        )  # Track sources of broadcast messages
-        global_whois: Dict[str, int] = defaultdict(
-            int
-        )  # Track sources of global Who-Is requests
-        address_map = {}  # Map BACnet addresses to device IDs
-        reverse_address_map = {}  # Map device IDs to BACnet addresses
+    
+    # Initialize counters and mappings
+    traffic_counter: Dict[Tuple[str, str], int] = defaultdict(
+        int
+    )  # Count traffic between source-destination pairs
+    traffic_type_counter: Dict[str, int] = defaultdict(
+        int
+    )  # Count messages by BACnet message type
+    dest_type_counter: Dict[str, int] = defaultdict(
+        int
+    )  # Count by destination type (broadcast, unicast, etc.)
+    broadcast_src: Dict[str, int] = defaultdict(
+        int
+    )  # Track sources of broadcast messages
+    global_whois: Dict[str, int] = defaultdict(
+        int
+    )  # Track sources of global Who-Is requests
+    address_map = {}  # Map BACnet addresses to device IDs
+    reverse_address_map = {}  # Map device IDs to BACnet addresses
 
-        for packet in captures:
-            try:
-                # Assemble and decode the packet
-                data = assemble_bp_packet(packet)
-                bp_apdu = decode_packet(xtob(data))
-                src_addr = bp_apdu.pduSource
-                dest_addr = bp_apdu.pduDestination
-                packet_count += 1
-            except Exception as e:
-                continue
+    # Read the pcap file
+    
+    for bp_apdu in iterate_bacnet_packets(pcap_path):
+        try:
+            # Assemble and decode the packet
+            src_addr = bp_apdu.pduSource
+            dest_addr = bp_apdu.pduDestination
+            packet_count += 1
+        except Exception as e:
+            continue
 
-            # Process I-Am requests to build address maps
-            if issubclass(bp_apdu.__class__, IAmRequest):
-                # Map the BACnet address to the device ID
-                address_map[str(bp_apdu.pduSource)] = bp_apdu.iAmDeviceIdentifier[1]
-                reverse_address_map[bp_apdu.iAmDeviceIdentifier[1]] = str(
-                    bp_apdu.pduSource
-                )
+        # Process I-Am requests to build address maps
+        if issubclass(bp_apdu.__class__, IAmRequest):
+            # Map the BACnet address to the device ID
+            address_map[str(bp_apdu.pduSource)] = bp_apdu.iAmDeviceIdentifier[1]
+            reverse_address_map[bp_apdu.iAmDeviceIdentifier[1]] = str(
+                bp_apdu.pduSource
+            )
 
-            # Identify and count global Who-Is requests
-            if issubclass(bp_apdu.__class__, WhoIsRequest):
-                # A global Who-Is has the full possible device range (0 to 4194303)
-                if (
-                    bp_apdu.deviceInstanceRangeLowLimit == 0
-                    and bp_apdu.deviceInstanceRangeHighLimit == 4194303
-                ):
-                    global_whois[str(bp_apdu.pduSource)] += 1
-
-            # Count traffic between specific source-destination pairs
-            traffic_counter[(str(src_addr), str(dest_addr))] += 1
-
-            # Count by message type (class name)
-            traffic_type_counter[bp_apdu.__class__.__name__] += 1
-
-            # Categorize and count destination address types
-            if issubclass(dest_addr.__class__, GlobalBroadcast):
-                dest_type_counter[GlobalBroadcast.__name__] += 1
-                broadcast_src[str(src_addr)] += 1  # Track broadcast sources
-            elif issubclass(dest_addr.__class__, LocalBroadcast):
-                dest_type_counter[LocalBroadcast.__name__] += 1
-                broadcast_src[str(src_addr)] += 1  # Track broadcast sources
-            elif issubclass(dest_addr.__class__, RemoteStation):
-                dest_type_counter[RemoteStation.__name__] += 1
-            elif (
-                issubclass(dest_addr.__class__, Address)
-                and str(dest_addr.addrBroadcastTuple[0]) in broadcast_addrs
+        # Identify and count global Who-Is requests
+        if issubclass(bp_apdu.__class__, WhoIsRequest):
+            # A global Who-Is has the full possible device range (0 to 4194303)
+            if (
+                bp_apdu.deviceInstanceRangeLowLimit == 0
+                and bp_apdu.deviceInstanceRangeHighLimit == 4194303
             ):
-                # Handle broadcasts using standard IP addresses
-                dest_type_counter[LocalBroadcast.__name__] += 1
-                broadcast_src[str(src_addr)] += 1  # Track broadcast sources
-            else:
-                dest_type_counter[dest_addr.__class__.__name__] += 1
+                global_whois[str(bp_apdu.pduSource)] += 1
+
+        # Count traffic between specific source-destination pairs
+        traffic_counter[(str(src_addr), str(dest_addr))] += 1
+
+        # Count by message type (class name)
+        traffic_type_counter[bp_apdu.__class__.__name__] += 1
+
+        # Categorize and count destination address types
+        if issubclass(dest_addr.__class__, GlobalBroadcast):
+            dest_type_counter[GlobalBroadcast.__name__] += 1
+            broadcast_src[str(src_addr)] += 1  # Track broadcast sources
+        elif issubclass(dest_addr.__class__, LocalBroadcast):
+            dest_type_counter[LocalBroadcast.__name__] += 1
+            broadcast_src[str(src_addr)] += 1  # Track broadcast sources
+        elif issubclass(dest_addr.__class__, RemoteStation):
+            dest_type_counter[RemoteStation.__name__] += 1
+        elif (
+            issubclass(dest_addr.__class__, Address)
+            and str(dest_addr.addrBroadcastTuple[0]) in broadcast_addrs
+        ):
+            # Handle broadcasts using standard IP addresses
+            dest_type_counter[LocalBroadcast.__name__] += 1
+            broadcast_src[str(src_addr)] += 1  # Track broadcast sources
+        else:
+            dest_type_counter[dest_addr.__class__.__name__] += 1
 
     # Return comprehensive statistics dictionary
     return {
