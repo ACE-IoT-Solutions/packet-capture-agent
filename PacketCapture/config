@@ -5,6 +5,6 @@
   "capture_file": "example_capture.pcap",
   "protocol": "UDP",
   "ports": [ 47808, 47809 ],
-  "api_key": "",
+  "jwt": "",
   "api_url": ""
 }

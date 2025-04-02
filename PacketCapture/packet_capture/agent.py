@@ -34,12 +34,13 @@ _log.info("setup logging")
 from .analytics import generate_scores, get_local_broadcast, process_pcap
 from volttron.platform.messaging.health import STATUS_BAD, STATUS_GOOD
 from volttron.platform.vip.agent import RPC, Agent, Core, PubSub
+import volttron.platform.jsonapi as json
 
 utils.setup_logging()
 _log = logging.getLogger(__name__)
 _log.info("setup logging")
 
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 
 
 def packet_capture(config_path, **kwargs):
@@ -78,17 +79,20 @@ class PacketCapture(Agent):
             "capture_path": "/var/lib/volttron/packet_captures",
             "protocol": "UDP",
             "ports": 47808,
-            "api_key": None,
+            "jwt": None,
             "api_url": None,
             "gateway_name": os.uname()[1],  # Default to the hostname
-            "client_id": "client",  # Default client ID
-            "site_id": "site",  # Default site ID
+            "gateway": None,
+            "client": "client",  # Default client ID
+            "site": "site",  # Default site ID
             "analytics_enabled": True,
             "publish_to_volttron": True,
             "analytics_topic_prefix": None,  # Will be auto-generated if None
             "prometheus_enabled": False,
             "prometheus_metrics_path": "/var/lib/node_exporter/textfile_collector",
         }
+        self.ace_agent_config = self.get_default_config_from_agent_file()
+        self.default_config.update(self.ace_agent_config)
 
         # Initialize with default values if no config provided, will be updated by configure method
         self.capture_duration = config.get(
@@ -106,16 +110,17 @@ class PacketCapture(Agent):
         )
         self.protocol = config.get("protocol", self.default_config["protocol"])
         self.ports = config.get("ports", self.default_config["ports"])
-        self.api_key = config.get("api_key", self.default_config["api_key"])
+        self.api_key = config.get("jwt", self.default_config["jwt"])
         self.api_url = config.get("api_url", self.default_config["api_url"])
         self.gateway_name = config.get(
             "gateway_name", self.default_config["gateway_name"]
         )
-        self.client_id = config.get(
-            "client_id", self.default_config["client_id"]
+        self.gateway_slug = config.get("gateway", self.default_config["gateway"])
+        self.client = config.get(
+            "client", self.default_config["client"]
         )
-        self.site_id = config.get(
-            "site_id", self.default_config["site_id"]
+        self.site = config.get(
+            "site", self.default_config["site"]
         )
         self.analytics_enabled = config.get(
             "analytics_enabled", self.default_config["analytics_enabled"]
@@ -128,7 +133,7 @@ class PacketCapture(Agent):
         if config_topic_prefix:
             self.analytics_topic_prefix = config_topic_prefix
         else:
-            self.analytics_topic_prefix = f"/{self.client_id}/{self.site_id}/net-stats"
+            self.analytics_topic_prefix = f"/{self.client}/{self.site}/net-stats"
         self.prometheus_enabled = config.get(
             "prometheus_enabled", self.default_config["prometheus_enabled"]
         )
@@ -188,16 +193,16 @@ class PacketCapture(Agent):
                 )
                 self.protocol = config.get("protocol", self.default_config["protocol"])
                 self.ports = config.get("ports", self.default_config["ports"])
-                self.api_key = config.get("api_key", self.default_config["api_key"])
-                self.api_url = config.get("api_url", self.default_config["api_url"])
+                self.api_key = config.get("jwt", self.default_config["jwt"])
+                self.gateway = config.get("gateway", self.default_config["gateway"])
                 self.gateway_name = config.get(
                     "gateway_name", self.default_config["gateway_name"]
                 )
-                self.client_id = config.get(
-                    "client_id", self.default_config["client_id"]
+                self.client = config.get(
+                    "client", self.default_config["client"]
                 )
-                self.site_id = config.get(
-                    "site_id", self.default_config["site_id"]
+                self.site = config.get(
+                    "site", self.default_config["site"]
                 )
                 self.analytics_enabled = config.get(
                     "analytics_enabled", self.default_config["analytics_enabled"]
@@ -210,7 +215,7 @@ class PacketCapture(Agent):
                 if config_topic_prefix:
                     self.analytics_topic_prefix = config_topic_prefix
                 else:
-                    self.analytics_topic_prefix = f"/{self.client_id}/{self.site_id}/sentinel-stats"
+                    self.analytics_topic_prefix = f"/{self.client}/{self.site}/sentinel-stats"
                 self.prometheus_enabled = config.get(
                     "prometheus_enabled", self.default_config["prometheus_enabled"]
                 )
@@ -222,10 +227,10 @@ class PacketCapture(Agent):
                     f"Updated configuration: capture_interval={self.capture_interval}, "
                     f"capture_duration={self.capture_duration}, protocol={self.protocol}, "
                     f"ports={self.ports}, analytics_enabled={self.analytics_enabled}, "
-                    f"client_id={self.client_id}, site_id={self.site_id}, "
+                    f"client={self.client}, site={self.site}, "
                     f"publish_to_volttron={self.publish_to_volttron}, prometheus_enabled={self.prometheus_enabled}"
                 )
-                if not self.api_key or not self.api_url or not self.interface:
+                if not self.api_key or not self.interface:
                     _log.error(
                         "API key, API URL or interface not set. Skipping configuration update."
                     )
@@ -242,6 +247,19 @@ class PacketCapture(Agent):
             sys.stdout.flush()
             sys.stderr.flush()
             gevent.sleep(1)
+    
+    def get_default_config_from_agent_file(self):
+        """
+        Returns the default configuration for the agent.
+        This is used to set the default values for the agent's parameters.
+        """
+        try:
+            with open(os.path.join("/var/lib/volttron", "ace-agent.config"), "r", encoding="utf-8") as f:
+                _log.info("Reading default ace-agent config file")
+                return json.load(f)
+        except Exception as e:
+            _log.error(f"Error reading default ace-agent config file: {e}")
+            return {}
 
     def get_agent_data_path(self) -> str:
         """
@@ -328,8 +346,8 @@ class PacketCapture(Agent):
             try:
                 numeric_value = float(value)
                 self.prometheus_metrics[prometheus_name].labels(
-                    client=self.client_id,
-                    site=self.site_id,
+                    client=self.client,
+                    site=self.site,
                     gateway=self.gateway_name
                 ).set(numeric_value)
             except (ValueError, TypeError):
@@ -376,7 +394,7 @@ class PacketCapture(Agent):
             if self.publish_to_volttron:
                 _log.info(f"Publishing metrics to VOLTTRON message bus with prefix: {self.analytics_topic_prefix}")
             if self.prometheus_enabled:
-                _log.info(f"Writing Prometheus metrics to: {self.prometheus_metrics_path}/bacnet_metrics.prom with labels client={self.client_id}, site={self.site_id}, gateway={self.gateway_name}")
+                _log.info(f"Writing Prometheus metrics to: {self.prometheus_metrics_path}/bacnet_metrics.prom with labels client={self.client}, site={self.site}, gateway={self.gateway_name}")
 
         _log.info(f"Restarted periodic tasks with new configuration")
 
@@ -422,6 +440,13 @@ class PacketCapture(Agent):
                 with gzip.GzipFile(fileobj=compressed_file, mode="wb") as gz:
                     gz.write(file.read())
         os.remove(capture_file)  # Remove the original file after compression
+    
+    def get_api_url(self) -> str:
+        """
+        Returns the API URL for uploading captured packets.
+        If not set in the configuration, it raises an error.
+        """
+        return f"https://flightdeck.tail8c70f.ts.net/api/gateways/{self.gateway_slug}/pcap"
 
     def upload_to_api(self) -> None:
         """
@@ -436,7 +461,7 @@ class PacketCapture(Agent):
                     filedata = file.read()
                 try:
                     request = grequests.post(
-                        self.api_url,
+                        self.get_api_url(),
                         files=(
                             ("file", (f"{self.gateway_name}:{file_name}", filedata)),
                         ),

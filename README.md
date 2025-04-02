@@ -21,11 +21,11 @@ vctl config store <agent_vip_identity> config <path_to_config_file> --json
   "capture_path": "/var/lib/volttron/packet_captures",
   "protocol": "UDP",
   "ports": [47808, 47809],
-  "api_key": "your_api_key",
+  "jwt": "your_api_key",
   "api_url": "https://app.visualbacnet.com/api/v2/upload",
   "gateway_name": "my-gateway",
-  "client_id": "acme",
-  "site_id": "headquarters",
+  "client": "acme",
+  "site": "headquarters",
   "analytics_enabled": true,
   "publish_to_volttron": true,
   "analytics_topic_prefix": null,
@@ -46,11 +46,11 @@ vctl config store <agent_vip_identity> config <path_to_config_file> --json
 - `api_key`: API key for upload service
 - `api_url`: URL for upload service (default: https://app.visualbacnet.com/api/v2/upload)
 - `gateway_name`: Name of the gateway (default: system hostname)
-- `client_id`: Client identifier for organizing metrics (default: "client")
-- `site_id`: Site identifier for organizing metrics (default: "site")
+- `client`: Client identifier for organizing metrics (default: "client")
+- `site`: Site identifier for organizing metrics (default: "site")
 - `analytics_enabled`: Enable packet capture analytics processing (default: true)
 - `publish_to_volttron`: Publish metrics to VOLTTRON message bus (default: true)
-- `analytics_topic_prefix`: Prefix for analytics topics (default: /{client_id}/{site_id}/net-stats if not specified)
+- `analytics_topic_prefix`: Prefix for analytics topics (default: /{client}/{site}/net-stats if not specified)
 - `prometheus_enabled`: Enable writing metrics in Prometheus format for node_exporter (default: false)
 - `prometheus_metrics_path`: Path where Prometheus metrics files will be written (default: /var/lib/node_exporter/textfile_collector)
 
@@ -118,6 +118,7 @@ This agent originally used pyshark for packet processing, but has been refactore
 - **More direct access**: Works directly with packet data instead of going through parsing layers
 
 ## Version History
+1.6.1: Loads ace-agent.config for default configuration
 1.6.0: Refactored to use scapy instead of pyshark for packet processing
 1.5.0: Added client and site identifiers for better metrics organization and topic generation
 1.4.1: Updated to use prometheus_client library for proper metrics formatting
