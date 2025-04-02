@@ -15,5 +15,5 @@
   "publish_to_volttron": true,
   "analytics_topic_prefix": null,
   "prometheus_enabled": false,
-  "prometheus_metrics_path": "/opt/packages/prometheus_exporter/scrape_files/network_metrics.prom"
+  "prometheus_metrics_path": "/opt/packages/prometheus_exporter/scrape_files"
 }

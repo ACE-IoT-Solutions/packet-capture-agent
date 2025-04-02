@@ -17,7 +17,7 @@ import glob
 import gzip
 import logging
 import os
-# import subprocess
+import traceback
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Union
@@ -40,7 +40,7 @@ utils.setup_logging()
 _log = logging.getLogger(__name__)
 _log.info("setup logging")
 
-__version__ = "1.6.1"
+__version__ = "1.6.3"
 
 
 def packet_capture(config_path, **kwargs):
@@ -86,10 +86,10 @@ class PacketCapture(Agent):
             "client": "client",  # Default client ID
             "site": "site",  # Default site ID
             "analytics_enabled": True,
-            "publish_to_volttron": True,
+            "publish_to_volttron": False,
             "analytics_topic_prefix": None,  # Will be auto-generated if None
-            "prometheus_enabled": False,
-            "prometheus_metrics_path": "/var/lib/node_exporter/textfile_collector",
+            "prometheus_enabled": True,
+            "prometheus_metrics_path": "/opt/packages/prometheus_exporter/scrape_files",
         }
         self.ace_agent_config = self.get_default_config_from_agent_file()
         self.default_config.update(self.ace_agent_config)
@@ -215,7 +215,7 @@ class PacketCapture(Agent):
                 if config_topic_prefix:
                     self.analytics_topic_prefix = config_topic_prefix
                 else:
-                    self.analytics_topic_prefix = f"/{self.client_id}/{self.site_id}/net-stats"
+                    self.analytics_topic_prefix = f"/{self.client}/{self.site}/net-stats"
                 self.prometheus_enabled = config.get(
                     "prometheus_enabled", self.default_config["prometheus_enabled"]
                 )
@@ -232,9 +232,9 @@ class PacketCapture(Agent):
                 )
                 if not self.api_key or not self.interface:
                     _log.error(
-                        "API key, API URL or interface not set. Skipping configuration update."
+                        "API key or interface not set. Skipping configuration update."
                     )
-                    self.core.health_status(
+                    self.vip.health.set_status(
                         STATUS_BAD, "API key, API URL or interface not set."
                     )
             except Exception as e:
@@ -452,7 +452,7 @@ class PacketCapture(Agent):
         """
         Upload captured packets to ace API
         """
-        _log.debug("Attemping to collect files for upload")
+        # _log.debug("Attemping to collect files for upload")
         with self.upload_lock:
             for file_path in glob.glob(f"{self.get_agent_data_path()}/*.pcap.gz"):
                 file_name = os.path.basename(file_path)
@@ -557,6 +557,8 @@ class PacketCapture(Agent):
                 try:
                     self.process_analytics(capture_file_path)
                 except Exception as e:
+                    tb = traceback.format_exc()
+                    _log.error(f"Error in process_analytics: {tb}")
                     _log.error(f"Error processing analytics: {e}")
 
             self.compress_capture_file(capture_file_path)  # Compress the capture file
@@ -583,7 +585,7 @@ class PacketCapture(Agent):
                 # Process the pcap file
                 _log.info(f"Processing pcap file for analytics: {pcap_file_path}")
                 results = process_pcap(pcap_file_path, self.broadcast_addrs)
-                _log.debug( f"Processed results: {results}")
+                # _log.debug( f"Processed results: {results}")
 
                 # Generate network scores
                 scores = generate_scores(

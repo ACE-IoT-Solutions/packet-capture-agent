@@ -118,6 +118,8 @@ This agent originally used pyshark for packet processing, but has been refactore
 - **More direct access**: Works directly with packet data instead of going through parsing layers
 
 ## Version History
+1.6.3: Updated default config
+1.6.2: Fixed typo in health subsystem calls
 1.6.1: Loads ace-agent.config for default configuration
 1.6.0: Refactored to use scapy instead of pyshark for packet processing
 1.5.0: Added client and site identifiers for better metrics organization and topic generation
