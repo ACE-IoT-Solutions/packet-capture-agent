@@ -520,7 +520,7 @@ class PacketCapture(Agent):
                 if hasattr(error, 'stderr'):
                     _log.error(f"cannot execute tcpdump command: {error} - {error.stderr}")
                 else:
-                    _log.error(f"cannot execute tcpdump commnad {error}")
+                    _log.error(f"cannot execute tcpdump command {error}")
                 return
 
             # Run analytics on the captured file if enabled
