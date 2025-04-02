@@ -215,7 +215,7 @@ class PacketCapture(Agent):
                 if config_topic_prefix:
                     self.analytics_topic_prefix = config_topic_prefix
                 else:
-                    self.analytics_topic_prefix = f"/{self.client}/{self.site}/sentinel-stats"
+                    self.analytics_topic_prefix = f"/{self.client_id}/{self.site_id}/net-stats"
                 self.prometheus_enabled = config.get(
                     "prometheus_enabled", self.default_config["prometheus_enabled"]
                 )
@@ -545,7 +545,7 @@ class PacketCapture(Agent):
                 if hasattr(error, 'stderr'):
                     _log.error(f"cannot execute tcpdump command: {error} - {error.stderr}")
                 else:
-                    _log.error(f"cannot execute tcpdump commnad {error}")
+                    _log.error(f"cannot execute tcpdump command {error}")
                 return
 
             # Run analytics on the captured file if enabled
