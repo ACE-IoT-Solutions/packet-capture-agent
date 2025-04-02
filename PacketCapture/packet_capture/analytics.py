@@ -42,7 +42,7 @@ def iterate_bacnet_packets(pcap_path: str) -> Generator:
                     yield bp_apdu
             except Exception as e:
                 # Skip packets that can't be processed
-                print(f"Error decoding packet: {e} data: {packet.original.hex()}")
+                _log.error(f"Error decoding packet: {e} data: {packet.original.hex()}")
                 continue
 
 
