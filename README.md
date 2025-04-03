@@ -118,6 +118,7 @@ This agent originally used pyshark for packet processing, but has been refactore
 - **More direct access**: Works directly with packet data instead of going through parsing layers
 
 ## Version History
+- 1.6.6: Added sigint for stopping timedout captures
 - 1.6.5: Allowed setup with no interface specified
 - 1.6.4: Fixed handling of periods with no packets captured
 - 1.6.3: Updated default config

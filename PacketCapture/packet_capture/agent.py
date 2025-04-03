@@ -19,6 +19,7 @@ import logging
 import os
 import traceback
 import sys
+import signal
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Union
 
@@ -40,7 +41,7 @@ utils.setup_logging()
 _log = logging.getLogger(__name__)
 _log.info("setup logging")
 
-__version__ = "1.6.5"
+__version__ = "1.6.6"
 
 
 def packet_capture(config_path, **kwargs):
@@ -544,6 +545,7 @@ class PacketCapture(Agent):
                     return
             except subprocess.TimeoutExpired:
                 _log.warning("tcpdump command timed out, killing the process...")
+                self.current_capture.send_signal(signal.SIGINT)
                 self.current_capture.kill()
                 self.current_capture.wait()  # Ensure the process is terminated
                 _log.info("tcpdump process killed due to timeout.")    
