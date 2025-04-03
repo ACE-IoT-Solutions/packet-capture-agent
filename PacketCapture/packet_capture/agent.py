@@ -540,7 +540,11 @@ class PacketCapture(Agent):
                     if self.current_capture.stderr is not None:
                         _log.error(f"tcpdump command error: {self.current_capture.stderr.read()}")
                     return
-                
+            except subprocess.TimeoutExpired:
+                _log.warning("tcpdump command timed out, killing the process...")
+                self.current_capture.kill()
+                self.current_capture.wait()  # Ensure the process is terminated
+                _log.info("tcpdump process killed due to timeout.")    
             except Exception as error:
                 if hasattr(error, 'stderr'):
                     _log.error(f"cannot execute tcpdump command: {error} - {error.stderr}")
