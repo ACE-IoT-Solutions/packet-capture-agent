@@ -40,7 +40,7 @@ utils.setup_logging()
 _log = logging.getLogger(__name__)
 _log.info("setup logging")
 
-__version__ = "1.6.3"
+__version__ = "1.6.4"
 
 
 def packet_capture(config_path, **kwargs):

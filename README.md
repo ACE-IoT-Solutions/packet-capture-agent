@@ -118,16 +118,17 @@ This agent originally used pyshark for packet processing, but has been refactore
 - **More direct access**: Works directly with packet data instead of going through parsing layers
 
 ## Version History
-1.6.3: Updated default config
-1.6.2: Fixed typo in health subsystem calls
-1.6.1: Loads ace-agent.config for default configuration
-1.6.0: Refactored to use scapy instead of pyshark for packet processing
-1.5.0: Added client and site identifiers for better metrics organization and topic generation
-1.4.1: Updated to use prometheus_client library for proper metrics formatting
-1.4.0: Added Prometheus metrics support and made VOLTTRON publishing optional
-1.3.2: Added helper method for publishing metrics
-1.3.1: Integrated analytics directly into agent code
-1.3.0: Added packet analytics processing and data bus publication
-1.2.1: Added Config Store support
-1.1.1: Added offline capture
-1.0.0: Initial release
+- 1.6.4: Fixed handling of periods with no packets captured
+- 1.6.3: Updated default config
+- 1.6.2: Fixed typo in health subsystem calls
+- 1.6.1: Loads ace-agent.config for default configuration
+- 1.6.0: Refactored to use scapy instead of pyshark for packet processing
+- 1.5.0: Added client and site identifiers for better metrics organization and topic generation
+- 1.4.1: Updated to use prometheus_client library for proper metrics formatting
+- 1.4.0: Added Prometheus metrics support and made VOLTTRON publishing optional
+- 1.3.2: Added helper method for publishing metrics
+- 1.3.1: Integrated analytics directly into agent code
+- 1.3.0: Added packet analytics processing and data bus publication
+- 1.2.1: Added Config Store support
+- 1.1.1: Added offline capture
+- 1.0.0: Initial release
