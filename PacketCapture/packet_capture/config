@@ -1,6 +1,6 @@
 {
   "capture_duration": 300,
-  "capture_interval": 3600,
+  "capture_interval": 900,
   "upload_interval": 60,
   "interface": null,
   "capture_path": "/var/lib/volttron/packet_captures",
@@ -12,8 +12,8 @@
   "client": "client",
   "site": "site",
   "analytics_enabled": true,
-  "publish_to_volttron": true,
+  "publish_to_volttron": false,
   "analytics_topic_prefix": null,
-  "prometheus_enabled": false,
+  "prometheus_enabled": true,
   "prometheus_metrics_path": "/opt/packages/prometheus_exporter/scrape_files"
 }
