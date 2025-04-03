@@ -40,7 +40,7 @@ utils.setup_logging()
 _log = logging.getLogger(__name__)
 _log.info("setup logging")
 
-__version__ = "1.6.4"
+__version__ = "1.6.5"
 
 
 def packet_capture(config_path, **kwargs):
@@ -230,9 +230,11 @@ class PacketCapture(Agent):
                     f"client={self.client}, site={self.site}, "
                     f"publish_to_volttron={self.publish_to_volttron}, prometheus_enabled={self.prometheus_enabled}"
                 )
-                if not self.api_key or not self.interface:
+                if not self.interface:
+                    _log.info("No interface specified in configuration. listening on all interfaces this may not be desired")
+                if not self.api_key:
                     _log.error(
-                        "API key or interface not set. Skipping configuration update."
+                        "API key not set. Skipping configuration update."
                     )
                     self.vip.health.set_status(
                         STATUS_BAD, "API key, API URL or interface not set."
