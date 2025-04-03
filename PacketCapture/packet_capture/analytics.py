@@ -26,8 +26,6 @@ def iterate_bacnet_packets(pcap_path: str) -> Generator:
 
     Args:
         pcap_path: Path to the PCAP file to process
-        broadcast_addrs: List of broadcast addresses to identify in the capture
-
     Yields:
         Decoded BACnet APDU objects with valid source and destination addresses
     """
