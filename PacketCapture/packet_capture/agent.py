@@ -17,26 +17,26 @@ import glob
 import gzip
 import logging
 import os
-import traceback
-import sys
 import signal
+import sys
+import traceback
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Type, Union
+from typing import Dict, Type, Union
 
 import gevent
-from gevent import subprocess
-import gevent.subprocess
 import grequests
 import prometheus_client
+import volttron.platform.jsonapi as json
+from gevent import subprocess
 from volttron.platform.agent import utils
-utils.setup_logging()
-_log = logging.getLogger(__name__)
-_log.info("setup logging")
+from volttron.platform.messaging.health import STATUS_BAD
+from volttron.platform.vip.agent import Agent, Core
+
+# utils.setup_logging()
+# _log = logging.getLogger(__name__)
+# _log.info("setup logging")
 # Import local analytics module
 from .analytics import generate_scores, get_local_broadcast, process_pcap
-from volttron.platform.messaging.health import STATUS_BAD, STATUS_GOOD
-from volttron.platform.vip.agent import RPC, Agent, Core, PubSub
-import volttron.platform.jsonapi as json
 
 utils.setup_logging()
 _log = logging.getLogger(__name__)
@@ -118,12 +118,8 @@ class PacketCapture(Agent):
             "gateway_name", self.default_config["gateway_name"]
         )
         self.gateway_slug = config.get("gateway", self.default_config["gateway"])
-        self.client = config.get(
-            "client", self.default_config["client"]
-        )
-        self.site = config.get(
-            "site", self.default_config["site"]
-        )
+        self.client = config.get("client", self.default_config["client"])
+        self.site = config.get("site", self.default_config["site"])
         self.analytics_enabled = config.get(
             "analytics_enabled", self.default_config["analytics_enabled"]
         )
@@ -142,15 +138,16 @@ class PacketCapture(Agent):
         self.prometheus_metrics_path = config.get(
             "prometheus_metrics_path", self.default_config["prometheus_metrics_path"]
         )
+        self.gateway = config.get('gateway')
 
         # Cache for broadcast addresses
         self.broadcast_addrs = None
-        
+
         # Create a registry for Prometheus metrics
         self.prometheus_registry = prometheus_client.CollectorRegistry()
         self.prometheus_metrics = {}
 
-        self.captures: Dict[str,any] = {}
+        self.captures: Dict[str, any] = {}
         self.upload_lock = gevent.lock.BoundedSemaphore()
         self.analytics_lock = gevent.lock.BoundedSemaphore()
         self.data_path = kwargs.get("data_path", None)
@@ -189,7 +186,9 @@ class PacketCapture(Agent):
                 self.upload_interval = config.get(
                     "upload_interval", self.default_config["upload_interval"]
                 )
-                self.interface = config.get("interface", self.default_config["interface"])
+                self.interface = config.get(
+                    "interface", self.default_config["interface"]
+                )
                 self.capture_path = config.get(
                     "capture_path", self.default_config["capture_path"]
                 )
@@ -200,12 +199,8 @@ class PacketCapture(Agent):
                 self.gateway_name = config.get(
                     "gateway_name", self.default_config["gateway_name"]
                 )
-                self.client = config.get(
-                    "client", self.default_config["client"]
-                )
-                self.site = config.get(
-                    "site", self.default_config["site"]
-                )
+                self.client = config.get("client", self.default_config["client"])
+                self.site = config.get("site", self.default_config["site"])
                 self.analytics_enabled = config.get(
                     "analytics_enabled", self.default_config["analytics_enabled"]
                 )
@@ -217,12 +212,15 @@ class PacketCapture(Agent):
                 if config_topic_prefix:
                     self.analytics_topic_prefix = config_topic_prefix
                 else:
-                    self.analytics_topic_prefix = f"/{self.client}/{self.site}/net-stats"
+                    self.analytics_topic_prefix = (
+                        f"/{self.client}/{self.site}/net-stats"
+                    )
                 self.prometheus_enabled = config.get(
                     "prometheus_enabled", self.default_config["prometheus_enabled"]
                 )
                 self.prometheus_metrics_path = config.get(
-                    "prometheus_metrics_path", self.default_config["prometheus_metrics_path"]
+                    "prometheus_metrics_path",
+                    self.default_config["prometheus_metrics_path"],
                 )
 
                 _log.info(
@@ -230,25 +228,35 @@ class PacketCapture(Agent):
                     f"capture_duration={self.capture_duration}, protocol={self.protocol}, "
                     f"ports={self.ports}, analytics_enabled={self.analytics_enabled}, "
                     f"client={self.client}, site={self.site}, "
-                    f"publish_to_volttron={self.publish_to_volttron}, prometheus_enabled={self.prometheus_enabled}"
+                    f"publish_to_volttron={self.publish_to_volttron},"
+                    f" prometheus_enabled={self.prometheus_enabled}"
                 )
                 if not self.interface:
-                    _log.info("No interface specified in configuration. listening on all interfaces this may not be desired")
-                if not self.api_key:
-                    _log.error(
-                        "API key not set. Skipping configuration update."
+                    _log.info(
+                        "No interface specified in configuration."
+                        " listening on all interfaces this may not be desired"
                     )
+                if not self.api_key:
+                    _log.error("API key not set. Skipping configuration update.")
                     self.vip.health.set_status(
                         STATUS_BAD, "API key, API URL or interface not set."
                     )
                 # Log analytics status
                 if self.analytics_enabled:
-                    _log.info(f"Analytics processing enabled, will run after each packet capture")
+                    _log.info(
+                        "Analytics processing enabled, will run after each packet capture"
+                    )
                     if self.publish_to_volttron:
-                        _log.info(f"Publishing metrics to VOLTTRON message bus with prefix: {self.analytics_topic_prefix}")
+                        _log.info(
+                            "Publishing metrics to VOLTTRON message bus with prefix: "
+                            f"{self.analytics_topic_prefix}"
+                        )
                     if self.prometheus_enabled:
-                        _log.info(f"Writing Prometheus metrics to: {self.prometheus_metrics_path}/bacnet_metrics.prom with labels client={self.client}, site={self.site}, gateway={self.gateway_name}")
-            
+                        _log.info(
+                            f"Writing Prometheus metrics to: {self.prometheus_metrics_path}/bacnet_metrics.prom "
+                            f" with labels client={self.client}, site={self.site}, gateway={self.gateway_name}"
+                        )
+
             except Exception as e:
                 _log.error(f"could not configure: {e}")
             # Initialize data path if needed
@@ -259,14 +267,18 @@ class PacketCapture(Agent):
             sys.stdout.flush()
             sys.stderr.flush()
             gevent.sleep(1)
-    
+
     def get_default_config_from_agent_file(self):
         """
         Returns the default configuration for the agent.
         This is used to set the default values for the agent's parameters.
         """
         try:
-            with open(os.path.join("/var/lib/volttron", "ace-agent.config"), "r", encoding="utf-8") as f:
+            with open(
+                os.path.join("/var/lib/volttron", "ace-agent.config"),
+                "r",
+                encoding="utf-8",
+            ) as f:
                 _log.info("Reading default ace-agent config file")
                 return json.load(f)
         except Exception as e:
@@ -300,11 +312,11 @@ class PacketCapture(Agent):
             _log.info(f"Created capture directory: {capture_path}")
         else:
             _log.info(f"Using existing capture directory: {capture_path}")
-            
+
     def publish_metric(self, metric_name: str, value: Union[float, int, str]) -> None:
         """
         Publishes a metric based on the configured methods (VOLTTRON message bus and/or Prometheus).
-        
+
         Args:
             metric_name: The name of the metric (will be appended to the topic base)
             value: The value to publish
@@ -315,18 +327,20 @@ class PacketCapture(Agent):
             topic = f"{topic_base}/{metric_name}"
             self.vip.pubsub.publish("pubsub", topic, value)
             _log.debug(f"Published metric to VOLTTRON: {topic} = {value}")
-            
+
         # Write to Prometheus metrics file if enabled
         if self.prometheus_enabled:
             try:
                 self._write_prometheus_metric(metric_name, value)
             except Exception as e:
                 _log.error(f"Error writing Prometheus metric: {e}")
-                
-    def _write_prometheus_metric(self, metric_name: str, value: Union[float, int, str]) -> None:
+
+    def _write_prometheus_metric(
+        self, metric_name: str, value: Union[float, int, str]
+    ) -> None:
         """
         Writes a metric using the Prometheus client library.
-        
+
         Args:
             metric_name: The name of the metric
             value: The value to write
@@ -336,55 +350,68 @@ class PacketCapture(Agent):
             try:
                 os.makedirs(self.prometheus_metrics_path, exist_ok=True)
             except (OSError, PermissionError) as e:
-                _log.error(f"Cannot create Prometheus metrics directory {self.prometheus_metrics_path}: {e}")
+                _log.error(
+                    f"Cannot create Prometheus metrics directory {self.prometheus_metrics_path}: {e}"
+                )
                 return
-            
+
             # Clean metric name for Prometheus (replace / with _)
             prometheus_name = f"bacnet_{metric_name.replace('/', '_')}"
-            
+
             # Create metrics file path
-            metrics_file = os.path.join(self.prometheus_metrics_path, "bacnet_metrics.prom")
-            
+            metrics_file = os.path.join(
+                self.prometheus_metrics_path, "bacnet_metrics.prom"
+            )
+
             # Get or create the gauge metric
 
             if prometheus_name not in self.prometheus_metrics:
-                if prometheus_name.endswith("ratio") or prometheus_name.endswith("score") or prometheus_name == "bacnet_device_count":
+                if (
+                    prometheus_name.endswith("ratio")
+                    or prometheus_name.endswith("score")
+                    or prometheus_name == "bacnet_device_count"
+                ):
                     metric_type: Type = prometheus_client.Gauge
                 else:
                     metric_type = prometheus_client.Counter
                 self.prometheus_metrics[prometheus_name] = metric_type(
-                    prometheus_name, 
+                    prometheus_name,
                     f"BACnet metric: {metric_name}",
                     ["client", "site", "gateway"],
-                    registry=self.prometheus_registry
+                    registry=self.prometheus_registry,
                 )
-            
+
             # Set the value with the client, site, and gateway labels
             try:
                 numeric_value = float(value)
-                type_attr_map: Dict[Type, str] = {prometheus_client.Gauge: "set", prometheus_client.Counter: "inc"}
+                type_attr_map: Dict[Type, str] = {
+                    prometheus_client.Gauge: "set",
+                    prometheus_client.Counter: "inc",
+                }
                 metric = self.prometheus_metrics[prometheus_name]
                 labeled_metric = metric.labels(
-                    client=self.client,
-                    site=self.site,
-                    gateway=self.gateway_name
+                    client=self.client, site=self.site, gateway=self.gateway_name
                 )
                 getattr(labeled_metric, type_attr_map[type(metric)])(numeric_value)
             except (ValueError, TypeError):
                 # Skip metrics that can't be converted to float
-                _log.warning(f"Skipping non-numeric Prometheus metric: {metric_name}={value}")
+                _log.warning(
+                    f"Skipping non-numeric Prometheus metric: {metric_name}={value}"
+                )
                 return
-            
+
             # Write all metrics to file using the prometheus client library
             try:
-                prometheus_client.write_to_textfile(metrics_file, self.prometheus_registry)
+                prometheus_client.write_to_textfile(
+                    metrics_file, self.prometheus_registry
+                )
                 _log.debug(f"Wrote Prometheus metric: {prometheus_name} = {value}")
             except (IOError, PermissionError) as e:
                 _log.error(f"Cannot write Prometheus metrics to {metrics_file}: {e}")
         except Exception as e:
             _log.error(f"Unexpected error in Prometheus metrics handling: {e}")
             # Continue execution rather than propagating the exception
-    
+
     def _stop_periodic_tasks(self):
         """
         Stop all periodic tasks gracefully.
@@ -400,20 +427,19 @@ class PacketCapture(Agent):
             self.capture_task.kill()
         if self.upload_task:
             self.upload_task.kill()
-    
+
     def _start_periodic_tasks(self):
         """
         Start periodic tasks for packet capture and upload.
         This is called when the agent starts or reconfigures.
         """
         # Start new tasks with updated configuration
-        self.capture_task = self.core.periodic(
+        self.capture_task: gevent.Greenlet = self.core.periodic(
             self.capture_interval, self.packet_capture, wait=15
         )
-        self.upload_task = self.core.periodic(
+        self.upload_task: gevent.Greenlet = self.core.periodic(
             self.upload_interval, self.upload_to_api, wait=5
         )
-
 
     def _restart_periodic_tasks(self):
         """
@@ -423,16 +449,15 @@ class PacketCapture(Agent):
         self._stop_periodic_tasks()
         self._start_periodic_tasks()
 
-
-
-        _log.info(f"Restarted periodic tasks with new configuration")
+        _log.info("Restarted periodic tasks with new configuration")
 
     def check_free_space(self) -> bool:
         """
         Check if there is enough free space in the capture directory.
         Returns True if there is enough space, False otherwise.
         """
-        """Check if there is enough free space in the capture directory."""
+
+        # Check if there is enough free space in the capture directory.
         statvfs = os.statvfs(self.get_agent_data_path())
         free_space = statvfs.f_frsize * statvfs.f_bavail
         return free_space > 2**30  # Check if there is at least 1 GB of free space
@@ -469,19 +494,24 @@ class PacketCapture(Agent):
                 with gzip.GzipFile(fileobj=compressed_file, mode="wb") as gz:
                     gz.write(file.read())
         os.remove(capture_file)  # Remove the original file after compression
-    
+
     def get_api_url(self) -> str:
         """
         Returns the API URL for uploading captured packets.
         If not set in the configuration, it raises an error.
         """
-        return f"https://flightdeck.tail8c70f.ts.net/api/gateways/{self.gateway_slug}/pcap"
+        return (
+            f"https://flightdeck.tail8c70f.ts.net/api/gateways/{self.gateway_slug}/pcap"
+        )
 
     def update_api_key_from_config(self) -> bool:
+        """
+        Update the API key from the ace-agent configuration file if it exists.
+        """
         config = self.get_default_config_from_agent_file()
         if config and "jwt" in config:
             self.api_key = config["jwt"]
-            _log.info(f"Updated API key from configuration")
+            _log.info("Updated API key from configuration")
             return True
         return False
 
@@ -504,17 +534,25 @@ class PacketCapture(Agent):
                         ),
                         headers={"Authorization": f"Bearer {self.api_key}"},
                     )
-                    (response,) = grequests.map((request,))
+                    (response,) = grequests.map((request,))  # pylint: disable=W0632
                     if response.status_code == 201:
                         _log.info(f"Upload successful: {response.text}")
                         os.remove(file_path)
                     if response.status_code == 401:
-                        _log.error(f"Unauthorized: Invalid API key or token. {response.text}")
+                        _log.error(
+                            f"Unauthorized: Invalid API key or token. {response.text}"
+                        )
                         if self.update_api_key_from_config():
-                            _log.info("Updated API key from configuration, retrying upload...")
+                            _log.info(
+                                "Updated API key from configuration, retrying upload..."
+                            )
                         else:
-                            _log.error("Failed to update API key from configuration. Skipping upload.")
-                            self.vip.health.set_status(STATUS_BAD, "Invalid API key or token.")
+                            _log.error(
+                                "Failed to update API key from configuration. Skipping upload."
+                            )
+                            self.vip.health.set_status(
+                                STATUS_BAD, "Invalid API key or token."
+                            )
                             return
                     else:
                         _log.error(
@@ -534,7 +572,7 @@ class PacketCapture(Agent):
         elif isinstance(ports, list):
             # use type() instead of isinstance(), since booleans inherit from int
             # prevents false negatives if list contains bool
-            if not all((type(p) is int) for p in ports):
+            if not all(isinstance(p, int) for p in ports):
                 _log.error("ports list contains non-integer")
                 return None
 
@@ -561,7 +599,8 @@ class PacketCapture(Agent):
         ports_str = self.generate_port_list(self.ports)
         capture_file_path = self.get_capture_path(capture_start_time)
 
-        command = f"""tcpdump -G {self.capture_duration} -W 1 -w {capture_file_path} proto {self.protocol} and port {ports_str}"""
+        command = (f"tcpdump -G {self.capture_duration} -W 1 "
+                  f"-w {capture_file_path} proto {self.protocol} and port {ports_str}")
         if self.interface:
             command += f" -i {self.interface}"
 
@@ -573,23 +612,27 @@ class PacketCapture(Agent):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            self.captures[capture_file_path] = this_capture 
-            retcode = this_capture.wait(timeout=self.capture_duration+10)
+            self.captures[capture_file_path] = this_capture
+            retcode = this_capture.wait(timeout=self.capture_duration + 10)
             if retcode != 0:
                 _log.error(f"tcpdump command failed with return code {retcode}")
                 if this_capture.stdout is not None:
-                    _log.error(f"tcpdump command output: {this_capture.stdout.read().decode( 'utf-8')}")
+                    _log.error(
+                        f"tcpdump command output: {this_capture.stdout.read().decode( 'utf-8')}"
+                    )
                 if this_capture.stderr is not None:
-                    _log.error(f"tcpdump command error: {this_capture.stderr.read().decode('utf-8')}")  
+                    _log.error(
+                        f"tcpdump command error: {this_capture.stderr.read().decode('utf-8')}"
+                    )
                 return
         except subprocess.TimeoutExpired:
             _log.warning("tcpdump command timed out, killing the process...")
             this_capture.send_signal(signal.SIGINT)
             this_capture.kill()
             this_capture.wait()  # Ensure the process is terminated
-            _log.info("tcpdump process killed due to timeout.")    
+            _log.info("tcpdump process killed due to timeout.")
         except Exception as error:
-            if hasattr(error, 'stderr'):
+            if hasattr(error, "stderr"):
                 _log.error(f"cannot execute tcpdump command: {error} - {error.stderr}")
             else:
                 _log.error(f"cannot execute tcpdump command {error}")
@@ -648,7 +691,9 @@ class PacketCapture(Agent):
 
             # Publish component scores
             self.publish_metric("broadcast_ratio", scores["broadcast_ratio"])
-            self.publish_metric("local_broadcast_ratio", scores["local_broadcast_ratio"])
+            self.publish_metric(
+                "local_broadcast_ratio", scores["local_broadcast_ratio"]
+            )
             self.publish_metric("remote_station_ratio", scores["remote_station_ratio"])
             self.publish_metric("whois_ratio", scores["whois_ratio"])
             self.publish_metric("prop_acked_ratio", scores["prop_acked_ratio"])
@@ -683,9 +728,7 @@ class PacketCapture(Agent):
 
         Usually not needed if using the configuration store.
         """
-        _log.info(
-            f"Agent starting, waiting for configuration to be loaded. "
-        )
+        _log.info("Agent starting, waiting for configuration to be loaded. ")
 
         # Initialize data directory
         # self.initialize_data_path(self.get_agent_data_path())
