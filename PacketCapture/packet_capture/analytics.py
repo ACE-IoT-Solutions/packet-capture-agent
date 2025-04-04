@@ -264,6 +264,7 @@ def generate_scores(
     # Return the final score and component ratios
     return {
         "total_score": score,
+        "broadcast_ratio": broadcast_ratio,
         "local_broadcast_ratio": local_broadcast_ratio,
         "remote_station_ratio": remote_station_ratio,
         "whois_ratio": whois_ratio,

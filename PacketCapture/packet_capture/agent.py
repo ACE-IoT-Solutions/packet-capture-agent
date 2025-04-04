@@ -41,7 +41,7 @@ utils.setup_logging()
 _log = logging.getLogger(__name__)
 _log.info("setup logging")
 
-__version__ = "1.6.6"
+__version__ = "1.6.7"
 
 
 def packet_capture(config_path, **kwargs):
@@ -337,8 +337,13 @@ class PacketCapture(Agent):
             metrics_file = os.path.join(self.prometheus_metrics_path, "bacnet_metrics.prom")
             
             # Get or create the gauge metric
+
             if prometheus_name not in self.prometheus_metrics:
-                self.prometheus_metrics[prometheus_name] = prometheus_client.Gauge(
+                if prometheus_name.endswith("ratio") or prometheus_name.endswith("score"):
+                    metric_type: Union[prometheus_client.Gauge, prometheus_client.Counter] = prometheus_client.Gauge
+                else:
+                    metric_type = prometheus_client.Counter
+                self.prometheus_metrics[prometheus_name] = metric_type(
                     prometheus_name, 
                     f"BACnet metric: {metric_name}",
                     ["client", "site", "gateway"],
@@ -348,11 +353,19 @@ class PacketCapture(Agent):
             # Set the value with the client, site, and gateway labels
             try:
                 numeric_value = float(value)
-                self.prometheus_metrics[prometheus_name].labels(
-                    client=self.client,
-                    site=self.site,
-                    gateway=self.gateway_name
-                ).set(numeric_value)
+                metric = self.prometheus_metrics[prometheus_name]
+                if isinstance(metric, prometheus_client.Counter):
+                    metric.labels(
+                        client=self.client,
+                        site=self.site,
+                        gateway=self.gateway_name
+                    ).inc(numeric_value)
+                elif isinstance(metric, prometheus_client.Gauge):
+                    metric.labels(
+                        client=self.client,
+                        site=self.site,
+                        gateway=self.gateway_name
+                    ).set(numeric_value)
             except (ValueError, TypeError):
                 # Skip metrics that can't be converted to float
                 _log.warning(f"Skipping non-numeric Prometheus metric: {metric_name}={value}")
@@ -376,6 +389,7 @@ class PacketCapture(Agent):
         # Cancel existing tasks if they exist
         if self.capture_lock.locked():
             if self.current_capture:
+                self.current_capture.send_signal(signal.SIGINT)  # Gracefully stop the current capture
                 self.current_capture.kill()
                 _log.info("Cancelled previous packet capture task.")
         if self.capture_task:
@@ -451,6 +465,14 @@ class PacketCapture(Agent):
         """
         return f"https://flightdeck.tail8c70f.ts.net/api/gateways/{self.gateway_slug}/pcap"
 
+    def update_api_key_from_config(self) -> bool:
+        config = self.get_default_config_from_agent_file()
+        if config and "jwt" in config:
+            self.api_key = config["jwt"]
+            _log.info(f"Updated API key from configuration")
+            return True
+        return False
+
     def upload_to_api(self) -> None:
         """
         Upload captured packets to ace API
@@ -474,6 +496,14 @@ class PacketCapture(Agent):
                     if response.status_code == 201:
                         _log.info(f"Upload successful: {response.text}")
                         os.remove(file_path)
+                    if response.status_code == 401:
+                        _log.error(f"Unauthorized: Invalid API key or token. {response.text}")
+                        if self.update_api_key_from_config():
+                            _log.info("Updated API key from configuration, retrying upload...")
+                        else:
+                            _log.error("Failed to update API key from configuration. Skipping upload.")
+                            self.vip.health.set_status(STATUS_BAD, "Invalid API key or token.")
+                            return
                     else:
                         _log.error(
                             f"Upload failed: {response.status_code} {response.text}"
@@ -539,9 +569,9 @@ class PacketCapture(Agent):
                 if retcode != 0:
                     _log.error(f"tcpdump command failed with return code {retcode}")
                     if self.current_capture.stdout is not None:
-                        _log.error(f"tcpdump command output: {self.current_capture.stdout.read()}")
+                        _log.error(f"tcpdump command output: {self.current_capture.stdout.read().decode( 'utf-8')}")
                     if self.current_capture.stderr is not None:
-                        _log.error(f"tcpdump command error: {self.current_capture.stderr.read()}")
+                        _log.error(f"tcpdump command error: {self.current_capture.stderr.read().decode('utf-8')}")  
                     return
             except subprocess.TimeoutExpired:
                 _log.warning("tcpdump command timed out, killing the process...")
@@ -609,6 +639,7 @@ class PacketCapture(Agent):
                 self.publish_metric("score", scores["total_score"])
 
                 # Publish component scores
+                self.publish_metric("broadcast_ratio", scores["broadcast_ratio"])
                 self.publish_metric("local_broadcast_ratio", scores["local_broadcast_ratio"])
                 self.publish_metric("remote_station_ratio", scores["remote_station_ratio"])
                 self.publish_metric("whois_ratio", scores["whois_ratio"])
