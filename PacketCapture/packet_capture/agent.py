@@ -339,7 +339,7 @@ class PacketCapture(Agent):
             # Get or create the gauge metric
 
             if prometheus_name not in self.prometheus_metrics:
-                if prometheus_name.endswith("ratio") or prometheus_name.endswith("score"):
+                if prometheus_name.endswith("ratio") or prometheus_name.endswith("score") or prometheus_name == "bacnet_device_count":
                     metric_type: Union[prometheus_client.Gauge, prometheus_client.Counter] = prometheus_client.Gauge
                 else:
                     metric_type = prometheus_client.Counter
