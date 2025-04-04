@@ -118,7 +118,7 @@ This agent originally used pyshark for packet processing, but has been refactore
 - **More direct access**: Works directly with packet data instead of going through parsing layers
 
 ## Version History
-- 1.7.0: Removed capture lock to enable simultaneous captures
+- 1.7.0: Removed capture lock to enable simultaneous captures, added file cleanup, refactors, upload error handling bug
 - 1.6.8: Assigned prometheus types appropriately
 - 1.6.7: Improved error handling for config store updates and api key expiration
 - 1.6.6: Added sigint for stopping timedout captures

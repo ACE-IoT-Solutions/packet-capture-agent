@@ -32,15 +32,15 @@ from volttron.platform.agent import utils
 from volttron.platform.messaging.health import STATUS_BAD
 from volttron.platform.vip.agent import Agent, Core
 
-# utils.setup_logging()
-# _log = logging.getLogger(__name__)
-# _log.info("setup logging")
-# Import local analytics module
-from .analytics import generate_scores, get_local_broadcast, process_pcap
-
 utils.setup_logging()
 _log = logging.getLogger(__name__)
 _log.info("setup logging")
+# Import local analytics module
+from .analytics import generate_scores, get_local_broadcast, process_pcap
+
+# utils.setup_logging()
+# _log = logging.getLogger(__name__)
+# _log.info("setup logging")
 
 __version__ = "1.7.0"
 
@@ -417,11 +417,17 @@ class PacketCapture(Agent):
         Stop all periodic tasks gracefully.
         This is called when the agent is stopping or reconfiguring.
         """
+        keys_to_delete = []
         for file, process in self.captures.items():
             if process:
                 _log.info(f"Killing existing packet capture process: {file}")
                 process.send_signal(signal.SIGINT)
                 process.kill()
+                keys_to_delete.append(file)
+        for key in keys_to_delete:
+            del self.captures[key]
+            _log.info(f"Removed {key} from captures dictionary")
+
         # Cancel existing tasks if they exist
         if self.capture_task:
             self.capture_task.kill()
@@ -450,6 +456,27 @@ class PacketCapture(Agent):
         self._start_periodic_tasks()
 
         _log.info("Restarted periodic tasks with new configuration")
+
+    def _cleanup_files(self):
+        """
+        Clean up old capture files to free up space.
+        This method removes capture files older than a certain threshold.
+        """
+        try:
+            threshold_time = datetime.now(timezone.utc) - timedelta(days=89)
+            for file_path in glob.glob(f"{self.get_agent_data_path()}/*.pcap"):
+                file_name = os.path.basename(file_path)
+                if file_name not in self.captures:
+                    file_time_str = file_name.split('_')[1]
+                    file_time = datetime.strptime(file_time_str, "%Y-%m-%dT%H-%M-%S").replace(tzinfo=timezone.utc)
+                    if file_time < threshold_time:
+                        os.remove(file_path)
+                        _log.info(f"Removed old capture file: {file_path}")
+                    else:
+                        self.compress_capture_file(file_path)  # Compress if not old enough
+                        _log.info( f"Compressed capture file in cleanup: {file_path}")
+        except Exception as e:
+            _log.error(f"Error cleaning up old capture files: {e}")
 
     def check_free_space(self) -> bool:
         """
@@ -520,6 +547,9 @@ class PacketCapture(Agent):
         Upload captured packets to ace API
         """
         # _log.debug("Attemping to collect files for upload")
+        if self.upload_lock.locked():
+            _log.debug("Upload lock is currently held, skipping upload.")
+            return
         with self.upload_lock:
             for file_path in glob.glob(f"{self.get_agent_data_path()}/*.pcap.gz"):
                 file_name = os.path.basename(file_path)
@@ -637,6 +667,8 @@ class PacketCapture(Agent):
             else:
                 _log.error(f"cannot execute tcpdump command {error}")
             return
+        finally:
+            self.core.schedule(datetime.now() + timedelta(seconds=5), self._cleanup_files)
 
         # Run analytics on the captured file if enabled
         if self.analytics_enabled:
