@@ -538,7 +538,7 @@ class PacketCapture(Agent):
                     if response.status_code == 201:
                         _log.info(f"Upload successful: {response.text}")
                         os.remove(file_path)
-                    if response.status_code == 401:
+                    elif response.status_code == 401:
                         _log.error(
                             f"Unauthorized: Invalid API key or token. {response.text}"
                         )
