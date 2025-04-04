@@ -21,10 +21,11 @@ import traceback
 import sys
 import signal
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Union
+from typing import Dict, List, Type, Union
 
 import gevent
 from gevent import subprocess
+import gevent.subprocess
 import grequests
 import prometheus_client
 from volttron.platform.agent import utils
@@ -41,7 +42,7 @@ utils.setup_logging()
 _log = logging.getLogger(__name__)
 _log.info("setup logging")
 
-__version__ = "1.6.8"
+__version__ = "1.7.0"
 
 
 def packet_capture(config_path, **kwargs):
@@ -149,7 +150,7 @@ class PacketCapture(Agent):
         self.prometheus_registry = prometheus_client.CollectorRegistry()
         self.prometheus_metrics = {}
 
-        self.capture_lock = gevent.lock.BoundedSemaphore()
+        self.captures: Dict[str,any] = {}
         self.upload_lock = gevent.lock.BoundedSemaphore()
         self.analytics_lock = gevent.lock.BoundedSemaphore()
         self.data_path = kwargs.get("data_path", None)
@@ -240,6 +241,14 @@ class PacketCapture(Agent):
                     self.vip.health.set_status(
                         STATUS_BAD, "API key, API URL or interface not set."
                     )
+                # Log analytics status
+                if self.analytics_enabled:
+                    _log.info(f"Analytics processing enabled, will run after each packet capture")
+                    if self.publish_to_volttron:
+                        _log.info(f"Publishing metrics to VOLTTRON message bus with prefix: {self.analytics_topic_prefix}")
+                    if self.prometheus_enabled:
+                        _log.info(f"Writing Prometheus metrics to: {self.prometheus_metrics_path}/bacnet_metrics.prom with labels client={self.client}, site={self.site}, gateway={self.gateway_name}")
+            
             except Exception as e:
                 _log.error(f"could not configure: {e}")
             # Initialize data path if needed
@@ -340,7 +349,7 @@ class PacketCapture(Agent):
 
             if prometheus_name not in self.prometheus_metrics:
                 if prometheus_name.endswith("ratio") or prometheus_name.endswith("score") or prometheus_name == "bacnet_device_count":
-                    metric_type: Union[prometheus_client.Gauge, prometheus_client.Counter] = prometheus_client.Gauge
+                    metric_type: Type = prometheus_client.Gauge
                 else:
                     metric_type = prometheus_client.Counter
                 self.prometheus_metrics[prometheus_name] = metric_type(
@@ -353,19 +362,14 @@ class PacketCapture(Agent):
             # Set the value with the client, site, and gateway labels
             try:
                 numeric_value = float(value)
+                type_attr_map: Dict[Type, str] = {prometheus_client.Gauge: "set", prometheus_client.Counter: "inc"}
                 metric = self.prometheus_metrics[prometheus_name]
-                if isinstance(metric, prometheus_client.Counter):
-                    metric.labels(
-                        client=self.client,
-                        site=self.site,
-                        gateway=self.gateway_name
-                    ).inc(numeric_value)
-                elif isinstance(metric, prometheus_client.Gauge):
-                    metric.labels(
-                        client=self.client,
-                        site=self.site,
-                        gateway=self.gateway_name
-                    ).set(numeric_value)
+                labeled_metric = metric.labels(
+                    client=self.client,
+                    site=self.site,
+                    gateway=self.gateway_name
+                )
+                getattr(labeled_metric, type_attr_map[type(metric)])(numeric_value)
             except (ValueError, TypeError):
                 # Skip metrics that can't be converted to float
                 _log.warning(f"Skipping non-numeric Prometheus metric: {metric_name}={value}")
@@ -380,23 +384,28 @@ class PacketCapture(Agent):
         except Exception as e:
             _log.error(f"Unexpected error in Prometheus metrics handling: {e}")
             # Continue execution rather than propagating the exception
-
-    def _restart_periodic_tasks(self):
+    
+    def _stop_periodic_tasks(self):
         """
-        Cancel and restart periodic tasks with updated configuration values.
-        This is called when configuration changes or on agent startup.
+        Stop all periodic tasks gracefully.
+        This is called when the agent is stopping or reconfiguring.
         """
+        for file, process in self.captures.items():
+            if process:
+                _log.info(f"Killing existing packet capture process: {file}")
+                process.send_signal(signal.SIGINT)
+                process.kill()
         # Cancel existing tasks if they exist
-        if self.capture_lock.locked():
-            if self.current_capture:
-                self.current_capture.send_signal(signal.SIGINT)  # Gracefully stop the current capture
-                self.current_capture.kill()
-                _log.info("Cancelled previous packet capture task.")
         if self.capture_task:
             self.capture_task.kill()
         if self.upload_task:
             self.upload_task.kill()
-
+    
+    def _start_periodic_tasks(self):
+        """
+        Start periodic tasks for packet capture and upload.
+        This is called when the agent starts or reconfigures.
+        """
         # Start new tasks with updated configuration
         self.capture_task = self.core.periodic(
             self.capture_interval, self.packet_capture, wait=15
@@ -405,13 +414,16 @@ class PacketCapture(Agent):
             self.upload_interval, self.upload_to_api, wait=5
         )
 
-        # Log analytics status
-        if self.analytics_enabled:
-            _log.info(f"Analytics processing enabled, will run after each packet capture")
-            if self.publish_to_volttron:
-                _log.info(f"Publishing metrics to VOLTTRON message bus with prefix: {self.analytics_topic_prefix}")
-            if self.prometheus_enabled:
-                _log.info(f"Writing Prometheus metrics to: {self.prometheus_metrics_path}/bacnet_metrics.prom with labels client={self.client}, site={self.site}, gateway={self.gateway_name}")
+
+    def _restart_periodic_tasks(self):
+        """
+        Cancel and restart periodic tasks with updated configuration values.
+        This is called when configuration changes or on agent startup.
+        """
+        self._stop_periodic_tasks()
+        self._start_periodic_tasks()
+
+
 
         _log.info(f"Restarted periodic tasks with new configuration")
 
@@ -541,66 +553,63 @@ class PacketCapture(Agent):
         """
         Capture network packets on configured ports
         """
-        if self.capture_lock.locked():
-            _log.info("Previous capture has not completed. Skipping packet capture")
-            return
         if not self.check_free_space():
             _log.error("Not enough free space, skipping packet capture.")
             return
-        with self.capture_lock:
-            _log.info("Starting packet capture...")
-            capture_start_time = datetime.now(timezone.utc)
-            ports_str = self.generate_port_list(self.ports)
-            capture_file_path = self.get_capture_path(capture_start_time)
+        _log.info("Starting packet capture...")
+        capture_start_time = datetime.now(timezone.utc)
+        ports_str = self.generate_port_list(self.ports)
+        capture_file_path = self.get_capture_path(capture_start_time)
 
-            command = f"""tcpdump -G {self.capture_duration} -W 1 -w {capture_file_path} proto {self.protocol} and port {ports_str}"""
-            if self.interface:
-                command += f" -i {self.interface}"
+        command = f"""tcpdump -G {self.capture_duration} -W 1 -w {capture_file_path} proto {self.protocol} and port {ports_str}"""
+        if self.interface:
+            command += f" -i {self.interface}"
 
-            _log.info(f"capturing packets on ports {ports_str}")
-            try:
-                self.current_capture = subprocess.Popen(
-                    args=command,
-                    shell=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-                retcode = self.current_capture.wait(timeout=self.capture_duration+10)
-                if retcode != 0:
-                    _log.error(f"tcpdump command failed with return code {retcode}")
-                    if self.current_capture.stdout is not None:
-                        _log.error(f"tcpdump command output: {self.current_capture.stdout.read().decode( 'utf-8')}")
-                    if self.current_capture.stderr is not None:
-                        _log.error(f"tcpdump command error: {self.current_capture.stderr.read().decode('utf-8')}")  
-                    return
-            except subprocess.TimeoutExpired:
-                _log.warning("tcpdump command timed out, killing the process...")
-                self.current_capture.send_signal(signal.SIGINT)
-                self.current_capture.kill()
-                self.current_capture.wait()  # Ensure the process is terminated
-                _log.info("tcpdump process killed due to timeout.")    
-            except Exception as error:
-                if hasattr(error, 'stderr'):
-                    _log.error(f"cannot execute tcpdump command: {error} - {error.stderr}")
-                else:
-                    _log.error(f"cannot execute tcpdump command {error}")
+        _log.info(f"capturing packets on ports {ports_str}")
+        try:
+            this_capture = subprocess.Popen(
+                args=command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.captures[capture_file_path] = this_capture 
+            retcode = this_capture.wait(timeout=self.capture_duration+10)
+            if retcode != 0:
+                _log.error(f"tcpdump command failed with return code {retcode}")
+                if this_capture.stdout is not None:
+                    _log.error(f"tcpdump command output: {this_capture.stdout.read().decode( 'utf-8')}")
+                if this_capture.stderr is not None:
+                    _log.error(f"tcpdump command error: {this_capture.stderr.read().decode('utf-8')}")  
                 return
+        except subprocess.TimeoutExpired:
+            _log.warning("tcpdump command timed out, killing the process...")
+            this_capture.send_signal(signal.SIGINT)
+            this_capture.kill()
+            this_capture.wait()  # Ensure the process is terminated
+            _log.info("tcpdump process killed due to timeout.")    
+        except Exception as error:
+            if hasattr(error, 'stderr'):
+                _log.error(f"cannot execute tcpdump command: {error} - {error.stderr}")
+            else:
+                _log.error(f"cannot execute tcpdump command {error}")
+            return
 
-            # Run analytics on the captured file if enabled
-            if self.analytics_enabled:
-                _log.info(
-                    f"Running analytics on the newly captured file {capture_file_path}"
-                )
-                # Run analytics before compression so we can process the pcap directly
-                try:
-                    self.process_analytics(capture_file_path)
-                except Exception as e:
-                    tb = traceback.format_exc()
-                    _log.error(f"Error in process_analytics: {tb}")
-                    _log.error(f"Error processing analytics: {e}")
+        # Run analytics on the captured file if enabled
+        if self.analytics_enabled:
+            _log.info(
+                f"Running analytics on the newly captured file {capture_file_path}"
+            )
+            # Run analytics before compression so we can process the pcap directly
+            try:
+                self.process_analytics(capture_file_path)
+            except Exception as e:
+                tb = traceback.format_exc()
+                _log.error(f"Error in process_analytics: {tb}")
+                _log.error(f"Error processing analytics: {e}")
 
-            self.compress_capture_file(capture_file_path)  # Compress the capture file
-            _log.info(f"Packet capture completed and {capture_file_path} compressed.")
+        self.compress_capture_file(capture_file_path)  # Compress the capture file
+        _log.info(f"Packet capture completed and {capture_file_path} compressed.")
 
     def process_analytics(self, pcap_file_path: str) -> None:
         """
@@ -613,57 +622,56 @@ class PacketCapture(Agent):
             pcap_file_path: Path to the pcap file to process
         """
 
-        with self.analytics_lock:
-            try:
-                # Initialize broadcast addresses if needed
-                if self.broadcast_addrs is None:
-                    self.broadcast_addrs = get_local_broadcast()
-                    _log.info(f"Detected broadcast addresses: {self.broadcast_addrs}")
+        try:
+            # Initialize broadcast addresses if needed
+            if self.broadcast_addrs is None:
+                self.broadcast_addrs = get_local_broadcast()
+                _log.info(f"Detected broadcast addresses: {self.broadcast_addrs}")
 
-                # Process the pcap file
-                _log.info(f"Processing pcap file for analytics: {pcap_file_path}")
-                results = process_pcap(pcap_file_path, self.broadcast_addrs)
-                # _log.debug( f"Processed results: {results}")
+            # Process the pcap file
+            _log.info(f"Processing pcap file for analytics: {pcap_file_path}")
+            results = process_pcap(pcap_file_path, self.broadcast_addrs)
+            # _log.debug( f"Processed results: {results}")
 
-                # Generate network scores
-                scores = generate_scores(
-                    results["traffic_counter"],
-                    results["traffic_type_counter"],
-                    results["dest_type_counter"],
-                    results["global_whois"],
-                )
+            # Generate network scores
+            scores = generate_scores(
+                results["traffic_counter"],
+                results["traffic_type_counter"],
+                results["dest_type_counter"],
+                results["global_whois"],
+            )
 
-                # Publish metrics
+            # Publish metrics
 
-                # Publish overall network score
-                self.publish_metric("score", scores["total_score"])
+            # Publish overall network score
+            self.publish_metric("score", scores["total_score"])
 
-                # Publish component scores
-                self.publish_metric("broadcast_ratio", scores["broadcast_ratio"])
-                self.publish_metric("local_broadcast_ratio", scores["local_broadcast_ratio"])
-                self.publish_metric("remote_station_ratio", scores["remote_station_ratio"])
-                self.publish_metric("whois_ratio", scores["whois_ratio"])
-                self.publish_metric("prop_acked_ratio", scores["prop_acked_ratio"])
-                self.publish_metric("props_acked_ratio", scores["props_acked_ratio"])
+            # Publish component scores
+            self.publish_metric("broadcast_ratio", scores["broadcast_ratio"])
+            self.publish_metric("local_broadcast_ratio", scores["local_broadcast_ratio"])
+            self.publish_metric("remote_station_ratio", scores["remote_station_ratio"])
+            self.publish_metric("whois_ratio", scores["whois_ratio"])
+            self.publish_metric("prop_acked_ratio", scores["prop_acked_ratio"])
+            self.publish_metric("props_acked_ratio", scores["props_acked_ratio"])
 
-                # Publish traffic statistics
-                self.publish_metric("packet_count", results["packet_count"])
-                self.publish_metric("device_count", len(results["address_map"]))
+            # Publish traffic statistics
+            self.publish_metric("packet_count", results["packet_count"])
+            self.publish_metric("device_count", len(results["address_map"]))
 
-                # Publish message type counts
-                for msg_type, count in results["traffic_type_counter"].items():
-                    self.publish_metric(f"message_types/{msg_type}", count)
+            # Publish message type counts
+            for msg_type, count in results["traffic_type_counter"].items():
+                self.publish_metric(f"message_types/{msg_type}", count)
 
-                # Publish destination type counts
-                for dest_type, count in results["dest_type_counter"].items():
-                    self.publish_metric(f"destination_types/{dest_type}", count)
+            # Publish destination type counts
+            for dest_type, count in results["dest_type_counter"].items():
+                self.publish_metric(f"destination_types/{dest_type}", count)
 
-                _log.info(
-                    f"Published analytics with overall score: {scores['total_score']}"
-                )
+            _log.info(
+                f"Published analytics with overall score: {scores['total_score']}"
+            )
 
-            except Exception as e:
-                _log.error(f"Error processing analytics: {e}")
+        except Exception as e:
+            _log.error(f"Error processing analytics: {e}")
 
     @Core.receiver("onstart")
     def onstart(self, sender, **kwargs):
@@ -692,16 +700,7 @@ class PacketCapture(Agent):
         but before it disconnects from the message bus.
         """
         _log.info("Agent is stopping. Cancelling periodic tasks...")
-        if self.capture_lock.locked():
-            if self.current_capture:
-                self.current_capture.kill()
-                _log.info("Cancelled packet capture task.")
-        if self.capture_task:
-            self.capture_task.kill()
-            _log.info("Cancelled packet capture task.")
-        if self.upload_task:
-            self.upload_task.kill()
-            _log.info("Cancelled upload task.")
+        self._stop_periodic_tasks()
 
 
 def main():
