@@ -36,11 +36,7 @@ utils.setup_logging()
 _log = logging.getLogger(__name__)
 _log.info("setup logging")
 # Import local analytics module
-from .analytics import generate_scores, get_local_broadcast, process_pcap
-
-# utils.setup_logging()
-# _log = logging.getLogger(__name__)
-# _log.info("setup logging")
+from .analytics import generate_scores, get_local_broadcast, process_pcap # pylint: disable=C0413
 
 __version__ = "1.7.0"
 
@@ -405,7 +401,7 @@ class PacketCapture(Agent):
                 prometheus_client.write_to_textfile(
                     metrics_file, self.prometheus_registry
                 )
-                _log.debug(f"Wrote Prometheus metric: {prometheus_name} = {value}")
+                # _log.debug(f"Wrote Prometheus metric: {prometheus_name} = {value}")
             except (IOError, PermissionError) as e:
                 _log.error(f"Cannot write Prometheus metrics to {metrics_file}: {e}")
         except Exception as e:
