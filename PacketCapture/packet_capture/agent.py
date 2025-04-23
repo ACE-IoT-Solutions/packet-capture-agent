@@ -38,7 +38,7 @@ _log.info("setup logging")
 # Import local analytics module
 from .analytics import generate_scores, get_local_broadcast, process_pcap # pylint: disable=C0413
 
-__version__ = "1.7.0"
+__version__ = "1.7.1"
 
 
 def packet_capture(config_path, **kwargs):
@@ -556,7 +556,7 @@ class PacketCapture(Agent):
                     request = grequests.post(
                         self.get_api_url(),
                         files=(
-                            ("file", (f"{self.gateway_name}:{file_name}", filedata)),
+                            ("file", (f"{file_name}", filedata)),
                         ),
                         headers={"Authorization": f"Bearer {self.api_key}"},
                     )
