@@ -463,7 +463,7 @@ class PacketCapture(Agent):
             for file_path in glob.glob(f"{self.get_agent_data_path()}/*.pcap"):
                 file_name = os.path.basename(file_path)
                 if file_name not in self.captures:
-                    file_time_str = file_name.split('_')[1]
+                    file_time_str = file_name.split('_')[-2]
                     file_time = datetime.strptime(file_time_str, "%Y-%m-%dT%H-%M-%S").replace(tzinfo=timezone.utc)
                     if file_time < threshold_time:
                         os.remove(file_path)
