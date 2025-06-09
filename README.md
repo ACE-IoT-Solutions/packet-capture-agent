@@ -118,6 +118,9 @@ This agent originally used pyshark for packet processing, but has been refactore
 - **More direct access**: Works directly with packet data instead of going through parsing layers
 
 ## Version History
+- 1.7.2: 
+  - Properly handle errors making post request
+  - Formatting changes
 - 1.7.1: Fixed file name when uploading to API
 - 1.7.0: Removed capture lock to enable simultaneous captures, added file cleanup, refactors, upload error handling bug
 - 1.6.8: Assigned prometheus types appropriately

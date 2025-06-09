@@ -10,6 +10,7 @@ Process packet captures to extract network performance metrics and statistics
 Publish analytics results to VOLTTRON message bus
 
 """
+ # pylint: disable=C0413
 
 __docformat__ = "reStructuredText"
 
@@ -29,16 +30,20 @@ import prometheus_client
 import volttron.platform.jsonapi as json
 from gevent import subprocess
 from volttron.platform.agent import utils
-from volttron.platform.messaging.health import STATUS_BAD
+from volttron.platform.messaging.health import STATUS_BAD, STATUS_GOOD
 from volttron.platform.vip.agent import Agent, Core
 
 utils.setup_logging()
 _log = logging.getLogger(__name__)
 _log.info("setup logging")
 # Import local analytics module
-from .analytics import generate_scores, get_local_broadcast, process_pcap # pylint: disable=C0413
+from packet_capture.analytics import (
+    generate_scores,
+    get_local_broadcast,
+    process_pcap,
+)
 
-__version__ = "1.7.1"
+__version__ = "1.7.2b"
 
 
 def packet_capture(config_path, **kwargs):
@@ -134,7 +139,7 @@ class PacketCapture(Agent):
         self.prometheus_metrics_path = config.get(
             "prometheus_metrics_path", self.default_config["prometheus_metrics_path"]
         )
-        self.gateway = config.get('gateway')
+        self.gateway = config.get("gateway")
 
         # Cache for broadcast addresses
         self.broadcast_addrs = None
@@ -463,16 +468,20 @@ class PacketCapture(Agent):
             for file_path in glob.glob(f"{self.get_agent_data_path()}/*.pcap"):
                 file_name = os.path.basename(file_path)
                 if file_name not in self.captures:
-                    file_time_str = file_name.split('_')[1]
-                    file_time = datetime.strptime(file_time_str, "%Y-%m-%dT%H-%M-%S").replace(tzinfo=timezone.utc)
+                    file_time_str = file_name.split("_")[1]
+                    file_time = datetime.strptime(
+                        file_time_str, "%Y-%m-%dT%H-%M-%S"
+                    ).replace(tzinfo=timezone.utc)
                     if file_time < threshold_time:
                         os.remove(file_path)
                         _log.info(f"Removed old capture file: {file_path}")
                     else:
-                        self.compress_capture_file(file_path)  # Compress if not old enough
-                        _log.info( f"Compressed capture file in cleanup: {file_path}")
-        except Exception as e:
-            _log.error(f"Error cleaning up old capture files: {e}")
+                        self.compress_capture_file(
+                            file_path
+                        )  # Compress if not old enough
+                        _log.info(f"Compressed capture file in cleanup: {file_path}")
+        except Exception as exc:
+            _log.error(f"Error cleaning up old capture files: {exc}")
 
     def check_free_space(self) -> bool:
         """
@@ -555,12 +564,20 @@ class PacketCapture(Agent):
                 try:
                     request = grequests.post(
                         self.get_api_url(),
-                        files=(
-                            ("file", (f"{file_name}", filedata)),
-                        ),
+                        files=(("file", (f"{file_name}", filedata)),),
                         headers={"Authorization": f"Bearer {self.api_key}"},
                     )
-                    (response,) = grequests.map((request,))  # pylint: disable=W0632
+                    response = grequests.map(
+                        [request], exception_handler=self.grequests_exception_handler
+                    )[0]
+                    if response is None:
+                        _log.error(
+                            "Failed to get a response from the API"
+                        )
+                        self.vip.health.set_status(
+                            STATUS_BAD, "Failed to get a response from the API"
+                        )
+                        return
                     if response.status_code == 201:
                         _log.info(f"Upload successful: {response.text}")
                         os.remove(file_path)
@@ -586,6 +603,7 @@ class PacketCapture(Agent):
                         )
                 except Exception as error:
                     _log.debug(f"{error=}")
+                self.vip.health.set_status(STATUS_GOOD)
 
     def generate_port_list(self, ports) -> Union[str, None]:
         """
@@ -625,8 +643,10 @@ class PacketCapture(Agent):
         ports_str = self.generate_port_list(self.ports)
         capture_file_path = self.get_capture_path(capture_start_time)
 
-        command = (f"tcpdump -G {self.capture_duration} -W 1 "
-                  f"-w {capture_file_path} proto {self.protocol} and port {ports_str}")
+        command = (
+            f"tcpdump -G {self.capture_duration} -W 1 "
+            f"-w {capture_file_path} proto {self.protocol} and port {ports_str}"
+        )
         if self.interface:
             command += f" -i {self.interface}"
 
@@ -664,7 +684,9 @@ class PacketCapture(Agent):
                 _log.error(f"cannot execute tcpdump command {error}")
             return
         finally:
-            self.core.schedule(datetime.now() + timedelta(seconds=5), self._cleanup_files)
+            self.core.schedule(
+                datetime.now() + timedelta(seconds=5), self._cleanup_files
+            )
 
         # Run analytics on the captured file if enabled
         if self.analytics_enabled:
@@ -674,10 +696,10 @@ class PacketCapture(Agent):
             # Run analytics before compression so we can process the pcap directly
             try:
                 self.process_analytics(capture_file_path)
-            except Exception as e:
-                tb = traceback.format_exc()
-                _log.error(f"Error in process_analytics: {tb}")
-                _log.error(f"Error processing analytics: {e}")
+            except Exception as exc:
+                trace = traceback.format_exc()
+                _log.error(f"Error in process_analytics: {trace}")
+                _log.error(f"Error processing analytics: {exc}")
 
         self.compress_capture_file(capture_file_path)  # Compress the capture file
         _log.info(f"Packet capture completed and {capture_file_path} compressed.")
@@ -743,8 +765,15 @@ class PacketCapture(Agent):
                 f"Published analytics with overall score: {scores['total_score']}"
             )
 
-        except Exception as e:
-            _log.error(f"Error processing analytics: {e}")
+        except Exception as exc:
+            _log.error(f"Error processing analytics: {exc}")
+
+    def grequests_exception_handler(self, request, exception):
+        """
+        Handle exceptions for grequests.
+        This is called when a request fails.
+        """
+        _log.error(f"Request failed: {request.url} with exception: {exception}")
 
     @Core.receiver("onstart")
     def onstart(self, sender, **kwargs):
