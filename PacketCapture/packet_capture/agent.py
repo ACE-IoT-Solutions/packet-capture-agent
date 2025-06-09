@@ -43,7 +43,7 @@ from packet_capture.analytics import (
     process_pcap,
 )
 
-__version__ = "1.7.2b"
+__version__ = "1.7.2"
 
 
 def packet_capture(config_path, **kwargs):
@@ -532,8 +532,10 @@ class PacketCapture(Agent):
         Returns the API URL for uploading captured packets.
         If not set in the configuration, it raises an error.
         """
+        config = self.get_default_config_from_agent_file()
+        url = config.get("url", "https://flightdeck.tail8c70f.ts.net")
         return (
-            f"https://flightdeck.tail8c70f.ts.net/api/gateways/{self.gateway_slug}/pcap"
+            f"{url}/api/gateways/{self.gateway_slug}/pcap"
         )
 
     def update_api_key_from_config(self) -> bool:

@@ -121,6 +121,7 @@ This agent originally used pyshark for packet processing, but has been refactore
 - 1.7.2: 
   - Properly handle errors making post request
   - Formatting changes
+  - Retrieve upload URL from ace-agent.config
 - 1.7.1: Fixed file name when uploading to API
 - 1.7.0: Removed capture lock to enable simultaneous captures, added file cleanup, refactors, upload error handling bug
 - 1.6.8: Assigned prometheus types appropriately
