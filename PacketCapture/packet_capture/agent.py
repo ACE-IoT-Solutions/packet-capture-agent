@@ -43,7 +43,7 @@ from packet_capture.analytics import (
     process_pcap,
 )
 
-__version__ = "1.7.2"
+__version__ = "1.7.3"
 
 
 def packet_capture(config_path, **kwargs):

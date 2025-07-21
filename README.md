@@ -118,6 +118,8 @@ This agent originally used pyshark for packet processing, but has been refactore
 - **More direct access**: Works directly with packet data instead of going through parsing layers
 
 ## Version History
+- 1.7.3:
+  - added handling for empty capture files
 - 1.7.2: 
   - Properly handle errors making post request
   - Formatting changes
