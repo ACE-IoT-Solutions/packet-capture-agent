@@ -689,6 +689,13 @@ class PacketCapture(Agent):
             self.core.schedule(
                 datetime.now() + timedelta(seconds=5), self._cleanup_files
             )
+        # check for empty capture file, handle accordingly
+        if os.path.getsize(capture_file_path) == 0:
+            _log.warning(
+                f"Captured file {capture_file_path} is empty, skipping analytics and compression."
+            )
+            os.remove(capture_file_path)
+            return
 
         # Run analytics on the captured file if enabled
         if self.analytics_enabled:
