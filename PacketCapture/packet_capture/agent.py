@@ -43,7 +43,7 @@ from packet_capture.analytics import (
     process_pcap,
 )
 
-__version__ = "1.7.3"
+__version__ = "1.7.4"
 
 
 def packet_capture(config_path, **kwargs):
@@ -84,7 +84,7 @@ class PacketCapture(Agent):
             "ports": 47808,
             "jwt": None,
             "api_url": None,
-            "gateway_name": os.uname()[1],  # Default to the hostname
+            "gateway_name": os.uname()[1].replace('-', '_'),  # Default to the hostname, converted to _s
             "gateway": None,
             "client": "client",  # Default client ID
             "site": "site",  # Default site ID
@@ -116,7 +116,8 @@ class PacketCapture(Agent):
         self.api_key = config.get("jwt", self.default_config["jwt"])
         self.api_url = config.get("api_url", self.default_config["api_url"])
         self.gateway_name = config.get(
-            "gateway_name", self.default_config["gateway_name"]
+            "gateway_name", 
+            self.ace_agent_config.get("gateway", self.default_config["gateway_name"])
         )
         self.gateway_slug = config.get("gateway", self.default_config["gateway"])
         self.client = config.get("client", self.default_config["client"])
