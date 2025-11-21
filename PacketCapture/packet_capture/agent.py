@@ -43,7 +43,7 @@ from packet_capture.analytics import (
     process_pcap,
 )
 
-__version__ = "1.7.3"
+__version__ = "1.7.4"
 
 
 def packet_capture(config_path, **kwargs):
@@ -560,6 +560,7 @@ class PacketCapture(Agent):
         with self.upload_lock:
             for file_path in glob.glob(f"{self.get_agent_data_path()}/*.pcap.gz"):
                 file_name = os.path.basename(file_path)
+                gevent.sleep(2) # Rate limit uploading to API
                 _log.debug(f"uploading to API... {self.api_url} {file_name=}")
                 with open(file_path, "rb") as file:
                     filedata = file.read()
