@@ -43,7 +43,7 @@ from packet_capture.analytics import (
     process_pcap,
 )
 
-__version__ = "1.7.4"
+__version__ = "1.7.5"
 
 
 def packet_capture(config_path, **kwargs):
@@ -115,9 +115,9 @@ class PacketCapture(Agent):
         self.ports = config.get("ports", self.default_config["ports"])
         self.api_key = config.get("jwt", self.default_config["jwt"])
         self.api_url = config.get("api_url", self.default_config["api_url"])
-        self.gateway_name = config.get(
-            "gateway_name", self.default_config["gateway_name"]
-        )
+        self.gateway_name = self.ace_agent_config.get(
+            "gateway", self.default_config["gateway_name"]
+        ).replace("_", "-")
         self.gateway_slug = config.get("gateway", self.default_config["gateway"])
         self.client = config.get("client", self.default_config["client"])
         self.site = config.get("site", self.default_config["site"])
@@ -197,9 +197,9 @@ class PacketCapture(Agent):
                 self.ports = config.get("ports", self.default_config["ports"])
                 self.api_key = config.get("jwt", self.default_config["jwt"])
                 self.gateway = config.get("gateway", self.default_config["gateway"])
-                self.gateway_name = config.get(
-                    "gateway_name", self.default_config["gateway_name"]
-                )
+                self.gateway_name = self.ace_agent_config.get(
+                    "gateway", self.default_config["gateway_name"]
+                ).replace("_", "-")
                 self.client = config.get("client", self.default_config["client"])
                 self.site = config.get("site", self.default_config["site"])
                 self.analytics_enabled = config.get(
