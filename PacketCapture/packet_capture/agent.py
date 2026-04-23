@@ -27,6 +27,7 @@ from typing import Dict, Type, Union
 import gevent
 import grequests
 import prometheus_client
+from prometheus_client import start_http_server
 import volttron.platform.jsonapi as json
 from gevent import subprocess
 from volttron.platform.agent import utils
@@ -43,7 +44,9 @@ from packet_capture.analytics import (
     process_pcap,
 )
 
-__version__ = "1.7.6"
+__version__ = "1.8.0"
+
+PROMETHEUS_HTTP_PORT = 8001
 
 
 def packet_capture(config_path, **kwargs):
@@ -91,8 +94,6 @@ class PacketCapture(Agent):
             "analytics_enabled": True,
             "publish_to_volttron": False,
             "analytics_topic_prefix": None,  # Will be auto-generated if None
-            "prometheus_enabled": True,
-            "prometheus_metrics_path": "/opt/packages/prometheus_exporter/scrape_files",
         }
         self.ace_agent_config = self.get_default_config_from_agent_file()
         self.default_config.update(self.ace_agent_config)
@@ -133,12 +134,6 @@ class PacketCapture(Agent):
             self.analytics_topic_prefix = config_topic_prefix
         else:
             self.analytics_topic_prefix = f"/{self.client}/{self.site}/net-stats"
-        self.prometheus_enabled = config.get(
-            "prometheus_enabled", self.default_config["prometheus_enabled"]
-        )
-        self.prometheus_metrics_path = config.get(
-            "prometheus_metrics_path", self.default_config["prometheus_metrics_path"]
-        )
         self.gateway = config.get("gateway")
 
         # Cache for broadcast addresses
@@ -216,21 +211,13 @@ class PacketCapture(Agent):
                     self.analytics_topic_prefix = (
                         f"/{self.client}/{self.site}/net-stats"
                     )
-                self.prometheus_enabled = config.get(
-                    "prometheus_enabled", self.default_config["prometheus_enabled"]
-                )
-                self.prometheus_metrics_path = config.get(
-                    "prometheus_metrics_path",
-                    self.default_config["prometheus_metrics_path"],
-                )
 
                 _log.info(
                     f"Updated configuration: capture_interval={self.capture_interval}, "
                     f"capture_duration={self.capture_duration}, protocol={self.protocol}, "
                     f"ports={self.ports}, analytics_enabled={self.analytics_enabled}, "
                     f"client={self.client}, site={self.site}, "
-                    f"publish_to_volttron={self.publish_to_volttron},"
-                    f" prometheus_enabled={self.prometheus_enabled}"
+                    f"publish_to_volttron={self.publish_to_volttron}"
                 )
                 if not self.interface:
                     _log.info(
@@ -252,11 +239,10 @@ class PacketCapture(Agent):
                             "Publishing metrics to VOLTTRON message bus with prefix: "
                             f"{self.analytics_topic_prefix}"
                         )
-                    if self.prometheus_enabled:
-                        _log.info(
-                            f"Writing Prometheus metrics to: {self.prometheus_metrics_path}/bacnet_metrics.prom "
-                            f" with labels client={self.client}, site={self.site}, gateway={self.gateway_name}"
-                        )
+                    _log.info(
+                        f"Serving Prometheus metrics at http://127.0.0.1:{PROMETHEUS_HTTP_PORT}/metrics"
+                        f" with labels client={self.client}, site={self.site}, gateway={self.gateway_name}"
+                    )
 
             except Exception as e:
                 _log.error(f"could not configure: {e}")
@@ -322,96 +308,42 @@ class PacketCapture(Agent):
             metric_name: The name of the metric (will be appended to the topic base)
             value: The value to publish
         """
-        # Publish to VOLTTRON message bus if enabled
         if self.publish_to_volttron:
             topic_base = f"{self.analytics_topic_prefix}/{self.gateway_name}"
             topic = f"{topic_base}/{metric_name}"
             self.vip.pubsub.publish("pubsub", topic, value)
             _log.debug(f"Published metric to VOLTTRON: {topic} = {value}")
 
-        # Write to Prometheus metrics file if enabled
-        if self.prometheus_enabled:
-            try:
-                self._write_prometheus_metric(metric_name, value)
-            except Exception as e:
-                _log.error(f"Error writing Prometheus metric: {e}")
-
-    def _write_prometheus_metric(
-        self, metric_name: str, value: Union[float, int, str]
-    ) -> None:
-        """
-        Writes a metric using the Prometheus client library.
-
-        Args:
-            metric_name: The name of the metric
-            value: The value to write
-        """
         try:
-            # Ensure metrics directory exists
-            try:
-                os.makedirs(self.prometheus_metrics_path, exist_ok=True)
-            except (OSError, PermissionError) as e:
-                _log.error(
-                    f"Cannot create Prometheus metrics directory {self.prometheus_metrics_path}: {e}"
-                )
-                return
+            numeric_value = float(value)
+        except (ValueError, TypeError):
+            _log.warning(f"Skipping non-numeric metric: {metric_name}={value}")
+            return
 
-            # Clean metric name for Prometheus (replace / with _)
-            prometheus_name = f"bacnet_{metric_name.replace('/', '_')}"
-
-            # Create metrics file path
-            metrics_file = os.path.join(
-                self.prometheus_metrics_path, "bacnet_metrics.prom"
+        prometheus_name = f"bacnet_{metric_name.replace('/', '_')}"
+        if prometheus_name not in self.prometheus_metrics:
+            if (
+                prometheus_name.endswith("ratio")
+                or prometheus_name.endswith("score")
+                or prometheus_name == "bacnet_device_count"
+            ):
+                metric_type: type = prometheus_client.Gauge
+            else:
+                metric_type = prometheus_client.Counter
+            self.prometheus_metrics[prometheus_name] = metric_type(
+                prometheus_name,
+                f"BACnet metric: {metric_name}",
+                ["client", "site", "gateway"],
+                registry=self.prometheus_registry,
             )
 
-            # Get or create the gauge metric
-
-            if prometheus_name not in self.prometheus_metrics:
-                if (
-                    prometheus_name.endswith("ratio")
-                    or prometheus_name.endswith("score")
-                    or prometheus_name == "bacnet_device_count"
-                ):
-                    metric_type: Type = prometheus_client.Gauge
-                else:
-                    metric_type = prometheus_client.Counter
-                self.prometheus_metrics[prometheus_name] = metric_type(
-                    prometheus_name,
-                    f"BACnet metric: {metric_name}",
-                    ["client", "site", "gateway"],
-                    registry=self.prometheus_registry,
-                )
-
-            # Set the value with the client, site, and gateway labels
-            try:
-                numeric_value = float(value)
-                type_attr_map: Dict[Type, str] = {
-                    prometheus_client.Gauge: "set",
-                    prometheus_client.Counter: "inc",
-                }
-                metric = self.prometheus_metrics[prometheus_name]
-                labeled_metric = metric.labels(
-                    client=self.client, site=self.site, gateway=self.gateway_name
-                )
-                getattr(labeled_metric, type_attr_map[type(metric)])(numeric_value)
-            except (ValueError, TypeError):
-                # Skip metrics that can't be converted to float
-                _log.warning(
-                    f"Skipping non-numeric Prometheus metric: {metric_name}={value}"
-                )
-                return
-
-            # Write all metrics to file using the prometheus client library
-            try:
-                prometheus_client.write_to_textfile(
-                    metrics_file, self.prometheus_registry
-                )
-                # _log.debug(f"Wrote Prometheus metric: {prometheus_name} = {value}")
-            except (IOError, PermissionError) as e:
-                _log.error(f"Cannot write Prometheus metrics to {metrics_file}: {e}")
-        except Exception as e:
-            _log.error(f"Unexpected error in Prometheus metrics handling: {e}")
-            # Continue execution rather than propagating the exception
+        labeled = self.prometheus_metrics[prometheus_name].labels(
+            client=self.client, site=self.site, gateway=self.gateway_name
+        )
+        if isinstance(self.prometheus_metrics[prometheus_name], prometheus_client.Gauge):
+            labeled.set(numeric_value)
+        else:
+            labeled.inc(numeric_value)
 
     def _stop_periodic_tasks(self):
         """
@@ -801,6 +733,8 @@ class PacketCapture(Agent):
 
         Usually not needed if using the configuration store.
         """
+        start_http_server(PROMETHEUS_HTTP_PORT, addr='127.0.0.1', registry=self.prometheus_registry)
+        _log.info("Prometheus metrics available at http://127.0.0.1:%d/metrics", PROMETHEUS_HTTP_PORT)
         _log.info("Agent starting, waiting for configuration to be loaded. ")
 
         # Initialize data directory
