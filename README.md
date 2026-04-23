@@ -118,6 +118,7 @@ This agent originally used pyshark for packet processing, but has been refactore
 - **More direct access**: Works directly with packet data instead of going through parsing layers
 
 ## Version History
+- 1.7.6: Update agent health status if tcpdump command fails
 - 1.7.5: Fix packet capture uploads when hostname doesn't match gateway slug
 - 1.7.4: rate limit uploading to API by 2 seconds between uploads
 - 1.7.3:

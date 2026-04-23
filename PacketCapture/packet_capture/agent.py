@@ -43,7 +43,7 @@ from packet_capture.analytics import (
     process_pcap,
 )
 
-__version__ = "1.7.5"
+__version__ = "1.7.6"
 
 
 def packet_capture(config_path, **kwargs):
@@ -665,6 +665,7 @@ class PacketCapture(Agent):
             retcode = this_capture.wait(timeout=self.capture_duration + 10)
             if retcode != 0:
                 _log.error(f"tcpdump command failed with return code {retcode}")
+                self.vip.health.set_status(STATUS_BAD, f"tcpdump command failed with return code {retcode}")
                 if this_capture.stdout is not None:
                     _log.error(
                         f"tcpdump command output: {this_capture.stdout.read().decode( 'utf-8')}"
@@ -680,12 +681,17 @@ class PacketCapture(Agent):
             this_capture.kill()
             this_capture.wait()  # Ensure the process is terminated
             _log.info("tcpdump process killed due to timeout.")
+            self.vip.health.set_status(STATUS_BAD, "tcpdump command timed out and was killed")
         except Exception as error:
             if hasattr(error, "stderr"):
                 _log.error(f"cannot execute tcpdump command: {error} - {error.stderr}")
             else:
                 _log.error(f"cannot execute tcpdump command {error}")
+            self.vip.health.set_status(STATUS_BAD, f"cannot execute tcpdump command: {error}")
             return
+        else:
+            _log.info("tcpdump command completed successfully.")
+            self.vip.health.set_status(STATUS_GOOD)
         finally:
             self.core.schedule(
                 datetime.now() + timedelta(seconds=5), self._cleanup_files
