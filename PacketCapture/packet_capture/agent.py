@@ -26,8 +26,10 @@ from typing import Dict, Type, Union
 
 import gevent
 import grequests
-import prometheus_client
-from prometheus_client import start_http_server
+from opentelemetry import metrics as otel_metrics
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 import volttron.platform.jsonapi as json
 from gevent import subprocess
 from volttron.platform.agent import utils
@@ -44,9 +46,7 @@ from packet_capture.analytics import (
     process_pcap,
 )
 
-__version__ = "1.8.0"
-
-PROMETHEUS_HTTP_PORT = 8001
+__version__ = "1.9.0"
 
 
 def packet_capture(config_path, **kwargs):
@@ -139,9 +139,9 @@ class PacketCapture(Agent):
         # Cache for broadcast addresses
         self.broadcast_addrs = None
 
-        # Create a registry for Prometheus metrics
-        self.prometheus_registry = prometheus_client.CollectorRegistry()
-        self.prometheus_metrics = {}
+        self._meter_provider = None
+        self._meter = None
+        self._otlp_metrics = {}
 
         self.captures: Dict[str, any] = {}
         self.upload_lock = gevent.lock.BoundedSemaphore()
@@ -240,7 +240,7 @@ class PacketCapture(Agent):
                             f"{self.analytics_topic_prefix}"
                         )
                     _log.info(
-                        f"Serving Prometheus metrics at http://127.0.0.1:{PROMETHEUS_HTTP_PORT}/metrics"
+                        f"Pushing OTLP metrics to http://localhost:4318/v1/metrics"
                         f" with labels client={self.client}, site={self.site}, gateway={self.gateway_name}"
                     )
 
@@ -302,7 +302,7 @@ class PacketCapture(Agent):
 
     def publish_metric(self, metric_name: str, value: Union[float, int, str]) -> None:
         """
-        Publishes a metric based on the configured methods (VOLTTRON message bus and/or Prometheus).
+        Publishes a metric based on the configured methods (VOLTTRON message bus and/or OTLP).
 
         Args:
             metric_name: The name of the metric (will be appended to the topic base)
@@ -314,36 +314,37 @@ class PacketCapture(Agent):
             self.vip.pubsub.publish("pubsub", topic, value)
             _log.debug(f"Published metric to VOLTTRON: {topic} = {value}")
 
+        if self._meter is None:
+            return
+
         try:
             numeric_value = float(value)
         except (ValueError, TypeError):
             _log.warning(f"Skipping non-numeric metric: {metric_name}={value}")
             return
 
-        prometheus_name = f"bacnet_{metric_name.replace('/', '_')}"
-        if prometheus_name not in self.prometheus_metrics:
-            if (
-                prometheus_name.endswith("ratio")
-                or prometheus_name.endswith("score")
-                or prometheus_name == "bacnet_device_count"
-            ):
-                metric_type: type = prometheus_client.Gauge
-            else:
-                metric_type = prometheus_client.Counter
-            self.prometheus_metrics[prometheus_name] = metric_type(
-                prometheus_name,
-                f"BACnet metric: {metric_name}",
-                ["client", "site", "gateway"],
-                registry=self.prometheus_registry,
-            )
+        otel_name = f"bacnet_{metric_name.replace('/', '_')}"
+        attrs = {"client": self.client, "site": self.site, "gateway": self.gateway_name}
 
-        labeled = self.prometheus_metrics[prometheus_name].labels(
-            client=self.client, site=self.site, gateway=self.gateway_name
-        )
-        if isinstance(self.prometheus_metrics[prometheus_name], prometheus_client.Gauge):
-            labeled.set(numeric_value)
+        if otel_name not in self._otlp_metrics:
+            if (
+                otel_name.endswith("ratio")
+                or otel_name.endswith("score")
+                or otel_name == "bacnet_device_count"
+            ):
+                self._otlp_metrics[otel_name] = self._meter.create_gauge(
+                    otel_name, description=f"BACnet metric: {metric_name}"
+                )
+            else:
+                self._otlp_metrics[otel_name] = self._meter.create_counter(
+                    otel_name, description=f"BACnet metric: {metric_name}"
+                )
+
+        instrument = self._otlp_metrics[otel_name]
+        if hasattr(instrument, "set"):
+            instrument.set(numeric_value, attrs)
         else:
-            labeled.inc(numeric_value)
+            instrument.add(numeric_value, attrs)
 
     def _stop_periodic_tasks(self):
         """
@@ -733,8 +734,12 @@ class PacketCapture(Agent):
 
         Usually not needed if using the configuration store.
         """
-        start_http_server(PROMETHEUS_HTTP_PORT, addr='127.0.0.1', registry=self.prometheus_registry)
-        _log.info("Prometheus metrics available at http://127.0.0.1:%d/metrics", PROMETHEUS_HTTP_PORT)
+        _exporter = OTLPMetricExporter(endpoint="http://localhost:4318/v1/metrics")
+        _reader = PeriodicExportingMetricReader(_exporter, export_interval_millis=30_000)
+        self._meter_provider = MeterProvider(metric_readers=[_reader])
+        otel_metrics.set_meter_provider(self._meter_provider)
+        self._meter = self._meter_provider.get_meter("ace.packet_capture", version=__version__)
+        _log.info("OTLP metrics publisher started, pushing to http://localhost:4318/v1/metrics")
         _log.info("Agent starting, waiting for configuration to be loaded. ")
 
         # Initialize data directory
@@ -751,6 +756,8 @@ class PacketCapture(Agent):
         """
         _log.info("Agent is stopping. Cancelling periodic tasks...")
         self._stop_periodic_tasks()
+        if self._meter_provider is not None:
+            self._meter_provider.shutdown()
 
 
 def main():
