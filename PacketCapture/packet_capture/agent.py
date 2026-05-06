@@ -30,6 +30,7 @@ from opentelemetry import metrics as otel_metrics
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.resources import Resource
 import volttron.platform.jsonapi as json
 from gevent import subprocess
 from volttron.platform.agent import utils
@@ -736,7 +737,7 @@ class PacketCapture(Agent):
         """
         _exporter = OTLPMetricExporter(endpoint="http://localhost:4318/v1/metrics")
         _reader = PeriodicExportingMetricReader(_exporter, export_interval_millis=30_000)
-        self._meter_provider = MeterProvider(metric_readers=[_reader])
+        self._meter_provider = MeterProvider(metric_readers=[_reader], resource=Resource.create({"service.name": self.core.identity}))
         otel_metrics.set_meter_provider(self._meter_provider)
         self._meter = self._meter_provider.get_meter("ace.packet_capture", version=__version__)
         _log.info("OTLP metrics publisher started, pushing to http://localhost:4318/v1/metrics")
