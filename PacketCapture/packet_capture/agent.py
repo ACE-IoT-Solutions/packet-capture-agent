@@ -325,7 +325,7 @@ class PacketCapture(Agent):
             return
 
         otel_name = f"bacnet_{metric_name.replace('/', '_')}"
-        attrs = {"client": self.client, "site": self.site, "gateway": self.gateway_name}
+        attrs = {"client": self.client, "site": self.site, "host": self.gateway_name}
 
         if otel_name not in self._otlp_metrics:
             if (
@@ -741,6 +741,18 @@ class PacketCapture(Agent):
         otel_metrics.set_meter_provider(self._meter_provider)
         self._meter = self._meter_provider.get_meter("ace.packet_capture", version=__version__)
         _log.info("OTLP metrics publisher started, pushing to http://localhost:4318/v1/metrics")
+        # Pre-initialize known message-type counters so they appear in Mimir immediately
+        # rather than only after the first capture containing that traffic type.
+        # OTel (unlike prometheus_client) only exports a metric after add() is called once.
+        for _msg_type in (
+            "ReadPropertyACK",
+            "ReadPropertyMultipleACK",
+            "ReadPropertyRequest",
+            "ReadPropertyMultipleRequest",
+            "WhoIsRequest",
+            "WhoHasRequest",
+        ):
+            self.publish_metric(f"message_types/{_msg_type}", 0)
         _log.info("Agent starting, waiting for configuration to be loaded. ")
 
         # Initialize data directory
