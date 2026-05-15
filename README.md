@@ -121,6 +121,8 @@ This agent originally used pyshark for packet processing, but has been refactore
 - 1.9.0:
   - Replace prometheus_client HTTP pull server with OTLP push to Alloy (http://localhost:4318/v1/metrics)
   - No longer requires port 8001 to be open
+  - Explicitly publish metrics for numerous bacnet message types
+  - Add label for "host" instead of "gateway"
 - 1.8.0: 
   - Update agent health status if tcpdump command fails
   - Expose metrics to prometheus server instead of writing to a file
