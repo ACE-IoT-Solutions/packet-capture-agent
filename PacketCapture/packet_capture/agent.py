@@ -47,7 +47,7 @@ from packet_capture.analytics import (
     process_pcap,
 )
 
-__version__ = "1.9.0"
+__version__ = "1.9.0b1"
 
 
 def packet_capture(config_path, **kwargs):
@@ -703,7 +703,16 @@ class PacketCapture(Agent):
             self.publish_metric("packet_count", results["packet_count"])
             self.publish_metric("device_count", len(results["address_map"]))
 
-            # Publish message type counts
+            # Publish message type counts — ensure known types always exist in Mimir
+            # even if they didn't appear in this capture, so the Acked State panel
+            # can find them for its count() > 0 gating condition.
+            known_msg_types = {
+                "ReadPropertyACK", "ReadPropertyMultipleACK",
+                "ReadPropertyRequest", "ReadPropertyMultipleRequest",
+                "WhoIsRequest", "WhoHasRequest",
+            }
+            for msg_type in known_msg_types - results["traffic_type_counter"].keys():
+                self.publish_metric(f"message_types/{msg_type}", 0)
             for msg_type, count in results["traffic_type_counter"].items():
                 self.publish_metric(f"message_types/{msg_type}", count)
 
@@ -741,18 +750,6 @@ class PacketCapture(Agent):
         otel_metrics.set_meter_provider(self._meter_provider)
         self._meter = self._meter_provider.get_meter("ace.packet_capture", version=__version__)
         _log.info("OTLP metrics publisher started, pushing to http://localhost:4318/v1/metrics")
-        # Pre-initialize known message-type counters so they appear in Mimir immediately
-        # rather than only after the first capture containing that traffic type.
-        # OTel (unlike prometheus_client) only exports a metric after add() is called once.
-        for _msg_type in (
-            "ReadPropertyACK",
-            "ReadPropertyMultipleACK",
-            "ReadPropertyRequest",
-            "ReadPropertyMultipleRequest",
-            "WhoIsRequest",
-            "WhoHasRequest",
-        ):
-            self.publish_metric(f"message_types/{_msg_type}", 0)
         _log.info("Agent starting, waiting for configuration to be loaded. ")
 
         # Initialize data directory
