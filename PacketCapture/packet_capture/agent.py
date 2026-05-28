@@ -27,6 +27,7 @@ from typing import Dict, Type, Union
 import gevent
 import grequests
 from opentelemetry import metrics as otel_metrics
+from opentelemetry.metrics import Observation
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
@@ -47,7 +48,7 @@ from packet_capture.analytics import (
     process_pcap,
 )
 
-__version__ = "1.9.0b1"
+__version__ = "1.9.0b2"
 
 
 def packet_capture(config_path, **kwargs):
@@ -143,6 +144,7 @@ class PacketCapture(Agent):
         self._meter_provider = None
         self._meter = None
         self._otlp_metrics = {}
+        self._metric_store: Dict[str, tuple] = {}
 
         self.captures: Dict[str, any] = {}
         self.upload_lock = gevent.lock.BoundedSemaphore()
@@ -327,25 +329,23 @@ class PacketCapture(Agent):
         otel_name = f"bacnet_{metric_name.replace('/', '_')}"
         attrs = {"client": self.client, "site": self.site, "host": self.gateway_name}
 
-        if otel_name not in self._otlp_metrics:
-            if (
-                otel_name.endswith("ratio")
-                or otel_name.endswith("score")
-                or otel_name == "bacnet_device_count"
-            ):
-                self._otlp_metrics[otel_name] = self._meter.create_gauge(
-                    otel_name, description=f"BACnet metric: {metric_name}"
-                )
-            else:
-                self._otlp_metrics[otel_name] = self._meter.create_counter(
-                    otel_name, description=f"BACnet metric: {metric_name}"
-                )
+        # Store the latest value — the observable gauge callback reads this on every
+        # 30-second collection cycle, keeping the metric alive in Mimir between captures.
+        self._metric_store[otel_name] = (numeric_value, attrs)
 
-        instrument = self._otlp_metrics[otel_name]
-        if hasattr(instrument, "set"):
-            instrument.set(numeric_value, attrs)
-        else:
-            instrument.add(numeric_value, attrs)
+        if otel_name not in self._otlp_metrics:
+            def make_callback(name: str):
+                def callback(options):
+                    if name in self._metric_store:
+                        v, a = self._metric_store[name]
+                        yield Observation(v, a)
+                return callback
+
+            self._otlp_metrics[otel_name] = self._meter.create_observable_gauge(
+                otel_name,
+                callbacks=[make_callback(otel_name)],
+                description=f"BACnet metric: {metric_name}",
+            )
 
     def _stop_periodic_tasks(self):
         """
@@ -581,13 +581,13 @@ class PacketCapture(Agent):
         capture_file_path = self.get_capture_path(capture_start_time)
 
         command = (
-            f"tcpdump -G {self.capture_duration} -W 1 "
-            f"-w {capture_file_path} proto {self.protocol} and port {ports_str}"
+            f"tcpdump -w {capture_file_path}"
+            f" proto {self.protocol} and port {ports_str}"
         )
         if self.interface:
             command += f" -i {self.interface}"
 
-        _log.info(f"capturing packets on ports {ports_str}")
+        _log.info(f"capturing packets on ports {ports_str} for {self.capture_duration}s")
         try:
             this_capture = subprocess.Popen(
                 args=command,
@@ -596,8 +596,12 @@ class PacketCapture(Agent):
                 stderr=subprocess.PIPE,
             )
             self.captures[capture_file_path] = this_capture
-            retcode = this_capture.wait(timeout=self.capture_duration + 10)
-            if retcode != 0:
+            # Send SIGINT after capture_duration so tcpdump flushes and closes cleanly.
+            # SIGINT (not SIGKILL) lets tcpdump write the pcap trailer, preventing truncation.
+            gevent.sleep(self.capture_duration)
+            this_capture.send_signal(signal.SIGINT)
+            retcode = this_capture.wait(timeout=10)
+            if retcode not in (0, -2):  # 0 = clean exit, -2 = SIGINT (expected)
                 _log.error(f"tcpdump command failed with return code {retcode}")
                 self.vip.health.set_status(STATUS_BAD, f"tcpdump command failed with return code {retcode}")
                 if this_capture.stdout is not None:
@@ -610,12 +614,11 @@ class PacketCapture(Agent):
                     )
                 return
         except subprocess.TimeoutExpired:
-            _log.warning("tcpdump command timed out, killing the process...")
-            this_capture.send_signal(signal.SIGINT)
+            _log.warning("tcpdump did not exit after SIGINT, force-killing...")
             this_capture.kill()
-            this_capture.wait()  # Ensure the process is terminated
-            _log.info("tcpdump process killed due to timeout.")
-            self.vip.health.set_status(STATUS_BAD, "tcpdump command timed out and was killed")
+            this_capture.wait()
+            _log.info("tcpdump process force-killed.")
+            self.vip.health.set_status(STATUS_BAD, "tcpdump did not exit cleanly after SIGINT")
         except Exception as error:
             if hasattr(error, "stderr"):
                 _log.error(f"cannot execute tcpdump command: {error} - {error.stderr}")
