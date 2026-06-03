@@ -48,7 +48,7 @@ from packet_capture.analytics import (
     process_pcap,
 )
 
-__version__ = "1.9.0b2"
+__version__ = "1.9.0"
 
 
 def packet_capture(config_path, **kwargs):
