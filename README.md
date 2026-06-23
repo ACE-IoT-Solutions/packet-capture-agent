@@ -118,6 +118,8 @@ This agent originally used pyshark for packet processing, but has been refactore
 - **More direct access**: Works directly with packet data instead of going through parsing layers
 
 ## Version History
+- 1.9.1:
+  - Execute tcpdump command directly without going through a shell
 - 1.9.0:
   - Replace prometheus_client HTTP pull server with OTLP push to Alloy (http://localhost:4318/v1/metrics)
   - No longer requires port 8001 to be open

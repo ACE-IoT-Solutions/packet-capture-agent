@@ -48,7 +48,7 @@ from packet_capture.analytics import (
     process_pcap,
 )
 
-__version__ = "1.9.0"
+__version__ = "1.9.1"
 
 
 def packet_capture(config_path, **kwargs):
@@ -580,18 +580,17 @@ class PacketCapture(Agent):
         ports_str = self.generate_port_list(self.ports)
         capture_file_path = self.get_capture_path(capture_start_time)
 
-        command = (
-            f"tcpdump -w {capture_file_path}"
-            f" proto {self.protocol} and port {ports_str}"
-        )
+        # Build filter expression tokens (ports_str may be "47808 or port 47809")
+        filter_expr = f"proto {self.protocol} and port {ports_str}".split()
+        command = ["tcpdump", "-w", capture_file_path] + filter_expr
         if self.interface:
-            command += f" -i {self.interface}"
+            command += ["-i", self.interface]
 
         _log.info(f"capturing packets on ports {ports_str} for {self.capture_duration}s")
         try:
             this_capture = subprocess.Popen(
                 args=command,
-                shell=True,
+                shell=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
